@@ -1,0 +1,5 @@
+build/
+.log
+.history
+.gcc
+.config

@@ -12,6 +12,7 @@
 #include <time.h>
 #include <getopt.h>
 #include <sys/syslog.h>
+#include <fcntl.h>
 
 #include "config.h"
 
@@ -26,15 +27,85 @@ Window g_root_window;
 config_t config;
 volatile int g_running = 1;
 int g_verbose = 0;
+static int signal_pipe_write_fd = -1;
+static int signal_pipe_read_fd = -1;
 
 static char *log_file = NULL;
 static char *config_file = NULL;
 static FILE *log_fp = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void signal_handler(int signum) {
-    msg(LOG_NOTICE, "Received signal %d, exiting...", signum);
-    g_running = 0;
+static void setup_signal_handling(void) {
+    int pipe_fds[2];
+    if (pipe(pipe_fds) == -1) {
+        msg(LOG_ERR, "Failed to create signal pipe: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    
+    signal_pipe_read_fd = pipe_fds[0];
+    signal_pipe_write_fd = pipe_fds[1];
+    
+    int flags = fcntl(signal_pipe_write_fd, F_GETFL);
+    fcntl(signal_pipe_write_fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void cleanup_resources(void) {
+    msg(LOG_NOTICE, "Cleaning up resources...");
+    
+    clipboard_stop_monitoring();
+    hotkey_cleanup();
+    
+    if (signal_pipe_read_fd != -1) {
+        close(signal_pipe_read_fd);
+        signal_pipe_read_fd = -1;
+    }
+    if (signal_pipe_write_fd != -1) {
+        close(signal_pipe_write_fd);
+        signal_pipe_write_fd = -1;
+    }
+    
+    config_free(&config);
+    
+    if (log_fp) {
+        fclose(log_fp);
+        log_fp = NULL;
+    }
+    if (log_file) {
+        free(log_file);
+        log_file = NULL;
+    }
+    if (config_file) {
+        free(config_file);
+        config_file = NULL;
+    }
+    
+    if (g_display) {
+        XCloseDisplay(g_display);
+        g_display = NULL;
+    }
+    
+    msg(LOG_NOTICE, "Cleanup completed");
+}
+
+void signal_handler(int signal_number) {
+    char signal_byte = (char)signal_number;
+    ssize_t result = write(signal_pipe_write_fd, &signal_byte, 1);
+    (void)result; // Suppress unused variable warning
+}
+
+static void process_received_signal(int signal_number) {
+    msg(LOG_NOTICE, "Processing signal %d", signal_number);
+    
+    switch (signal_number) {
+        case SIGINT:
+        case SIGTERM:
+            msg(LOG_NOTICE, "Termination signal received, shutting down");
+            g_running = 0;
+            break;
+        default:
+            msg(LOG_NOTICE, "Unknown signal %d received", signal_number);
+            break;
+    }
 }
 
 void hotkey_event_callback(const char *event_type) {
@@ -291,8 +362,10 @@ void msg(int priority, const char* format, ...) {
 }
 
 int main(int argc, char *argv[]) {
+    setup_signal_handling();
 
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     config_init(&config);
     
     static struct option long_options[] = {
@@ -379,23 +452,32 @@ int main(int argc, char *argv[]) {
     }
     
     int x11_fd = ConnectionNumber(g_display);
+    int max_fd = (x11_fd > signal_pipe_read_fd) ? x11_fd : signal_pipe_read_fd;
     
     while (g_running) {
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(x11_fd, &read_fds);
+        FD_SET(signal_pipe_read_fd, &read_fds);
         
-        struct timeval timeout = {0, 100000}; // 100ms
+        struct timeval timeout = {0, 100000};
         
-        int select_result = select(x11_fd + 1, &read_fds, NULL, NULL, &timeout);
+        int select_result = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
         
         if (select_result < 0) {
             if (errno == EINTR) {
-                // Interrupted by signal, check g_running
                 continue;
             }
             msg(LOG_ERR, "select() failed: %s", strerror(errno));
             break;
+        }
+        
+        if (select_result > 0 && FD_ISSET(signal_pipe_read_fd, &read_fds)) {
+            char signal_byte;
+            ssize_t bytes_read = read(signal_pipe_read_fd, &signal_byte, 1);
+            if (bytes_read > 0) {
+                process_received_signal((int)signal_byte);
+            }
         }
         
         if (select_result > 0 && FD_ISSET(x11_fd, &read_fds)) {
@@ -421,19 +503,8 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    msg(LOG_NOTICE, "Event loop finished");
-
-    clipboard_stop_monitoring();
-    msg(LOG_NOTICE, "Cleaning up...");
-    hotkey_cleanup();
-    
-    config_free(&config);
-
-    if (log_fp) fclose(log_fp);
-    if (log_file) free(log_file);
-    if (config_file) free(config_file);
-
-    XCloseDisplay(g_display);
+    msg(LOG_NOTICE, "Main event loop finished");
+    cleanup_resources();
 
     return EXIT_SUCCESS;
 }

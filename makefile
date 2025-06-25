@@ -1,4 +1,4 @@
-.PHONY: all clean run
+.PHONY: all clean run run-log
 
 .ONESHELL:
 
@@ -26,6 +26,13 @@ $(BUILD_DIR)/%.o: src/%.c $(BUILD_DIR)/config.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 run:
+	rm -f .log $(LOG)
+	$(MAKE) clean
+	$(MAKE) $(EXEC) --no-print-directory 2>&1 | tee -a $(LOG)
+	./$(EXEC) -c .config -V
+
+run-log:
+	# signals doesnt work perfect when we PIPE to tee..
 	rm -f .log $(LOG)
 	$(MAKE) clean
 	$(MAKE) $(EXEC) --no-print-directory 2>&1 | tee -a $(LOG)

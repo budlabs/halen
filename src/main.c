@@ -13,6 +13,7 @@
 #include <getopt.h>
 #include <sys/syslog.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include "config.h"
 
@@ -32,6 +33,7 @@ static int signal_pipe_read_fd = -1;
 
 static char *log_file = NULL;
 static char *config_file = NULL;
+static char *pid_file_path = NULL;
 static FILE *log_fp = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -49,6 +51,89 @@ static void setup_signal_handling(void) {
     fcntl(signal_pipe_write_fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static char* get_xdg_runtime_directory(void) {
+    char *xdg_runtime = getenv("XDG_RUNTIME_DIR");
+    if (xdg_runtime && strlen(xdg_runtime) > 0) {
+        return strdup(xdg_runtime);
+    }
+    
+    // Fallback to /tmp/user-uid if XDG_RUNTIME_DIR is not set
+    char fallback_path[256];
+    snprintf(fallback_path, sizeof(fallback_path), "/tmp/halen-%d", getuid());
+    
+    // Create directory if it doesn't exist
+    if (mkdir(fallback_path, 0700) == -1 && errno != EEXIST) {
+        msg(LOG_WARNING, "Failed to create runtime directory %s: %s", fallback_path, strerror(errno));
+        return strdup("/tmp");
+    }
+    
+    return strdup(fallback_path);
+}
+
+static int create_pid_file(void) {
+    char *runtime_dir = get_xdg_runtime_directory();
+    if (!runtime_dir) {
+        msg(LOG_ERR, "Failed to determine runtime directory");
+        return 0;
+    }
+    
+    size_t path_length = strlen(runtime_dir) + strlen("/halen.pid") + 1;
+    pid_file_path = malloc(path_length);
+    if (!pid_file_path) {
+        msg(LOG_ERR, "Failed to allocate memory for PID file path");
+        free(runtime_dir);
+        return 0;
+    }
+    
+    snprintf(pid_file_path, path_length, "%s/halen.pid", runtime_dir);
+    free(runtime_dir);
+    
+    // Check if PID file already exists and contains a running process
+    FILE *existing_pid_file = fopen(pid_file_path, "r");
+    if (existing_pid_file) {
+        pid_t existing_pid;
+        if (fscanf(existing_pid_file, "%d", &existing_pid) == 1) {
+            fclose(existing_pid_file);
+            
+            // Check if process is still running
+            if (kill(existing_pid, 0) == 0) {
+                msg(LOG_ERR, "Another instance is already running with PID %d", existing_pid);
+                return 0;
+            } else if (errno == ESRCH) {
+                msg(LOG_NOTICE, "Stale PID file found, removing it");
+                unlink(pid_file_path);
+            }
+        } else {
+            fclose(existing_pid_file);
+        }
+    }
+    
+    // Create new PID file
+    FILE *pid_file = fopen(pid_file_path, "w");
+    if (!pid_file) {
+        msg(LOG_ERR, "Failed to create PID file %s: %s", pid_file_path, strerror(errno));
+        return 0;
+    }
+    
+    fprintf(pid_file, "%d\n", getpid());
+    fclose(pid_file);
+    
+    msg(LOG_NOTICE, "Created PID file: %s", pid_file_path);
+    return 1;
+}
+
+static void remove_pid_file(void) {
+    if (pid_file_path) {
+        if (unlink(pid_file_path) == 0) {
+            msg(LOG_NOTICE, "Removed PID file: %s", pid_file_path);
+        } else {
+            msg(LOG_WARNING, "Failed to remove PID file %s: %s", pid_file_path, strerror(errno));
+        }
+        free(pid_file_path);
+        pid_file_path = NULL;
+    }
+}
+
 static void cleanup_resources(void) {
     msg(LOG_NOTICE, "Cleaning up resources...");
     
@@ -63,6 +148,8 @@ static void cleanup_resources(void) {
         close(signal_pipe_write_fd);
         signal_pipe_write_fd = -1;
     }
+    
+    remove_pid_file();
     
     config_free(&config);
     
@@ -408,12 +495,19 @@ int main(int argc, char *argv[]) {
         }
     }
     
+    // Create PID file after parsing CLI arguments
+    if (!create_pid_file()) {
+        config_free(&config);
+        return EXIT_FAILURE;
+    }
+    
     if (!config_file) {
         config_file = strdup(DEFAULT_CONFIG_FILE);
     }
     
     if (!config_parse_file(&config, config_file)) {
         msg(LOG_ERR, "Failed to parse config file");
+        remove_pid_file();
         config_free(&config);
         return EXIT_FAILURE;
     }
@@ -430,6 +524,7 @@ int main(int argc, char *argv[]) {
     g_display = XOpenDisplay(NULL);
     if (!g_display) {
         msg(LOG_ERR, "Cannot open X display");
+        remove_pid_file();
         config_free(&config);
         return EXIT_FAILURE;
     }

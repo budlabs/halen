@@ -3,3 +3,4 @@ build/
 .history
 .gcc
 .config
+.tmp

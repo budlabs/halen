@@ -50,6 +50,7 @@ static hotkey_callback_t main_callback = NULL;
 static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int is_monitoring = 0;
+static int monitoring_enabled = 1;
 static pthread_t xrecord_thread;
 static PopupAction popup_action = POPUP_ACTION_NONE;
 static int ctrl_pressed = 0;
@@ -168,7 +169,59 @@ static void ungrab_navigation_keys(void) {
     msg(LOG_DEBUG, "Ctrl+C, Ctrl+X, Ctrl+Z, and Ctrl+D ungrabbed - normal keys restored");
 }
 
+void hotkey_toggle_monitoring(void) {
+    pthread_mutex_lock(&state_mutex);
+    
+    monitoring_enabled = !monitoring_enabled;
+    
+    if (monitoring_enabled) {
+        msg(LOG_NOTICE, "Enabling hotkey monitoring");
+        
+        // Re-grab keys
+        if (!setup_key_blocking()) {
+            msg(LOG_ERR, "Failed to re-enable key blocking");
+        }
+        
+        // Reset state when re-enabling
+        reset_state();
+        
+    } else {
+        msg(LOG_NOTICE, "Disabling hotkey monitoring");
+        
+        // Ungrab all keys
+        KeyCode v_keycode = XKeysymToKeycode(g_display, XK_v);
+        if (v_keycode != 0) {
+            unsigned int modifier_combinations[] = {
+                ControlMask,
+                ControlMask | LockMask,
+                ControlMask | Mod2Mask,
+                ControlMask | LockMask | Mod2Mask
+            };
+            
+            for (int i = 0; i < 4; i++) {
+                XUngrabKey(g_display, v_keycode, modifier_combinations[i], g_root_window);
+            }
+        }
+        
+        // Ungrab navigation keys if they were grabbed
+        if (ctrl_v_count >= 2) {
+            ungrab_navigation_keys();
+        }
+        
+        // Reset state and hide popup
+        reset_state();
+        XFlush(g_display);
+    }
+    
+    pthread_mutex_unlock(&state_mutex);
+}
+
 void hotkey_handle_xevent(XEvent *event) {
+    if (!monitoring_enabled) {
+        XAllowEvents(g_display, SyncKeyboard, event->xkey.time);
+        XFlush(g_display);
+        return;
+    }
     
     if (replaying_paste) {
         XAllowEvents(g_display, SyncKeyboard, event->xkey.time);
@@ -280,6 +333,10 @@ void hotkey_handle_xevent(XEvent *event) {
 // this is only used to track the Control key state
 static void record_callback(XPointer closure, XRecordInterceptData *data) {
     (void)closure;
+    
+    if (!monitoring_enabled) {
+        goto end;
+    }
     
     if (replaying_paste) {
         goto end;

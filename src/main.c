@@ -70,23 +70,30 @@ static char* get_xdg_runtime_directory(void) {
     return strdup(fallback_path);
 }
 
-static int create_pid_file(void) {
+static char* construct_pid_file_path(void) {
     char *runtime_dir = get_xdg_runtime_directory();
     if (!runtime_dir) {
-        msg(LOG_ERR, "Failed to determine runtime directory");
-        return 0;
+        return NULL;
     }
     
     size_t path_length = strlen(runtime_dir) + strlen("/halen.pid") + 1;
-    pid_file_path = malloc(path_length);
-    if (!pid_file_path) {
-        msg(LOG_ERR, "Failed to allocate memory for PID file path");
+    char *path = malloc(path_length);
+    if (!path) {
         free(runtime_dir);
-        return 0;
+        return NULL;
     }
     
-    snprintf(pid_file_path, path_length, "%s/halen.pid", runtime_dir);
+    snprintf(path, path_length, "%s/halen.pid", runtime_dir);
     free(runtime_dir);
+    return path;
+}
+
+static int create_pid_file(void) {
+    pid_file_path = construct_pid_file_path();
+    if (!pid_file_path) {
+        msg(LOG_ERR, "Failed to determine runtime directory");
+        return 0;
+    }
     
     // Check if PID file already exists and contains a running process
     FILE *existing_pid_file = fopen(pid_file_path, "r");
@@ -188,6 +195,10 @@ static void process_received_signal(int signal_number) {
         case SIGTERM:
             msg(LOG_NOTICE, "Termination signal received, shutting down");
             g_running = 0;
+            break;
+        case SIGUSR1:
+            msg(LOG_NOTICE, "USR1 signal received, toggling hotkey monitoring");
+            hotkey_toggle_monitoring();
             break;
         default:
             msg(LOG_NOTICE, "Unknown signal %d received", signal_number);
@@ -395,6 +406,7 @@ static void print_help(const char *program_name) {
     printf("Options:\n");
     printf("  -V, --verbose         Enable verbose (debug) logging\n");
     printf("  -c, --config FILE     Use configuration file (default: %s)\n", DEFAULT_CONFIG_FILE);
+    printf("  -t, --toggle          Toggle monitoring in running instance\n");
     printf("  -h, --help            Show this help message\n");
     printf("      --version         Show version information\n");
     printf("\n");
@@ -448,16 +460,51 @@ void msg(int priority, const char* format, ...) {
     pthread_mutex_unlock(&log_mutex);
 }
 
+static int send_toggle_signal(void) {
+    char *temp_pid_path = construct_pid_file_path();
+    if (!temp_pid_path) {
+        msg(LOG_ERR, "Failed to determine runtime directory");
+        return 0;
+    }
+    
+    FILE *existing_pid_file = fopen(temp_pid_path, "r");
+    if (!existing_pid_file) {
+        msg(LOG_ERR, "No running instance found (PID file not found)");
+        free(temp_pid_path);
+        return 0;
+    }
+    
+    pid_t target_process_id;
+    if (fscanf(existing_pid_file, "%d", &target_process_id) != 1) {
+        msg(LOG_ERR, "Invalid PID file format");
+        fclose(existing_pid_file);
+        free(temp_pid_path);
+        return 0;
+    }
+    fclose(existing_pid_file);
+    free(temp_pid_path);
+    
+    if (kill(target_process_id, SIGUSR1) == 0) {
+        msg(LOG_NOTICE, "Toggle signal sent to process %d", target_process_id);
+        return 1;
+    } else {
+        msg(LOG_ERR, "Failed to send signal to process %d: %s", target_process_id, strerror(errno));
+        return 0;
+    }
+}
+
 int main(int argc, char *argv[]) {
     setup_signal_handling();
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGUSR1, signal_handler);
     config_init(&config);
     
     static struct option long_options[] = {
         {"verbose",  no_argument,       0, 'V'},
         {"config",   required_argument, 0, 'c'},
+        {"toggle",   no_argument,       0, 't'},
         {"help",     no_argument,       0, 'h'},
         {"version",  no_argument,       0, 'v'},
         {0, 0, 0, 0}
@@ -466,7 +513,7 @@ int main(int argc, char *argv[]) {
     int opt;
     int option_index = 0;
     
-    while ((opt = getopt_long(argc, argv, "Vc:hv", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "Vc:thv", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'V':
                 config.verbose = 1;
@@ -475,6 +522,13 @@ int main(int argc, char *argv[]) {
             case 'c':
                 if (config_file) free(config_file);
                 config_file = strdup(optarg);
+                break;
+            case 't':
+                if (send_toggle_signal()) {
+                    return EXIT_SUCCESS;
+                } else {
+                    return EXIT_FAILURE;
+                }
                 break;
             case 'h':
                 print_help(argv[0]);

@@ -18,5 +18,6 @@ PopupAction hotkey_get_popup_action(void);
 void hotkey_perform_paste(void);
 nav_direction_t hotkey_get_nav_direction(void);
 void hotkey_reset_nav_direction(void);
+void hotkey_toggle_monitoring(void);
 
 #endif // HOTKEY_H

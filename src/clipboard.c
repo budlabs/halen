@@ -755,6 +755,7 @@ static void regenerate_truncated_entries(void) {
     fgets(line, sizeof(line), history_file);
     
     int entries_regenerated = 0;
+    int line_index = 0;
     
     while (fgets(line, sizeof(line), history_file)) {
         if (strlen(line) < 10) {
@@ -764,90 +765,70 @@ static void regenerate_truncated_entries(void) {
         
         if (strstr(line, "[OVERFLOW:") != NULL) {
             msg(LOG_DEBUG, "Found overflow entry to regenerate: %.60s", line);
-            char overflow_hash[16];
-            char *overflow_marker = strstr(line, "[OVERFLOW:");
-            if (overflow_marker && sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash) == 1) {
-                msg(LOG_DEBUG, "Extracted overflow hash: %s", overflow_hash);
-                char overflow_file_path[PATH_MAX];
-                snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
-                        config.overflow_directory, overflow_hash);
-                
-                msg(LOG_DEBUG, "Trying to open overflow file: %s", overflow_file_path);
-                
-                FILE *overflow_file = fopen(overflow_file_path, "r");
-                if (overflow_file) {
-                    msg(LOG_DEBUG, "Successfully opened overflow file: %s", overflow_file_path);
-                    char *full_content = malloc(MAX_CLIPBOARD_SIZE);
-                    if (full_content) {
-                        size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
-                        full_content[content_size] = '\0';
-                        msg(LOG_DEBUG, "Read %zu bytes from overflow file", content_size);
-                        
-                        char *regenerated_content = create_display_formatted_content(full_content);
-                        if (regenerated_content) {
-                            msg(LOG_DEBUG, "Successfully regenerated content");
-                            size_t regenerated_length = strlen(regenerated_content);
-                            char *escaped_regenerated = malloc(regenerated_length * 2 + 1);
-                            if (escaped_regenerated) {
-                                const char *src = regenerated_content;
-                                char *dst = escaped_regenerated;
-                                while (*src) {
-                                    if (*src == '\n') {
-                                        *dst++ = '\\';
-                                        *dst++ = 'n';
-                                    } else if (*src == '\r') {
-                                        *dst++ = '\\';
-                                        *dst++ = 'r';
-                                    } else if (*src == '\t') {
-                                        *dst++ = '\\';
-                                        *dst++ = 't';
-                                    } else {
-                                        *dst++ = *src;
-                                    }
-                                    src++;
-                                }
-                                *dst = '\0';
-                                
-                                char timestamp[32], source[16];
-                                if (sscanf(line, "[%31[^]]] [%15[^]]]", timestamp, source) == 2) {
-                                    msg(LOG_DEBUG, "Writing regenerated entry for hash %s", overflow_hash);
-                                    fprintf(temp_file, "[%s] [%s] [OVERFLOW:%s] %s\n", 
-                                            timestamp, source, overflow_hash, escaped_regenerated);
-                                    entries_regenerated++;
-                                } else {
-                                    msg(LOG_WARNING, "Failed to parse timestamp/source from line: %.50s", line);
-                                    fputs(line, temp_file);
-                                }
-                                
-                                free(escaped_regenerated);
+            
+            char *full_content = load_full_content_from_overflow(line_index);
+            if (full_content) {
+                char *regenerated_content = create_display_formatted_content(full_content);
+                if (regenerated_content) {
+                    msg(LOG_DEBUG, "Successfully regenerated content");
+                    size_t regenerated_length = strlen(regenerated_content);
+                    char *escaped_regenerated = malloc(regenerated_length * 2 + 1);
+                    if (escaped_regenerated) {
+                        const char *src = regenerated_content;
+                        char *dst = escaped_regenerated;
+                        while (*src) {
+                            if (*src == '\n') {
+                                *dst++ = '\\';
+                                *dst++ = 'n';
+                            } else if (*src == '\r') {
+                                *dst++ = '\\';
+                                *dst++ = 'r';
+                            } else if (*src == '\t') {
+                                *dst++ = '\\';
+                                *dst++ = 't';
                             } else {
-                                msg(LOG_ERR, "Failed to allocate memory for escaped content");
-                                fputs(line, temp_file);
+                                *dst++ = *src;
                             }
-                            free(regenerated_content);
+                            src++;
+                        }
+                        *dst = '\0';
+                        
+                        char timestamp[32], source[16];
+                        if (sscanf(line, "[%31[^]]] [%15[^]]]", timestamp, source) == 2) {
+                            char overflow_hash[16];
+                            char *overflow_marker = strstr(line, "[OVERFLOW:");
+                            if (overflow_marker && sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash) == 1) {
+                                msg(LOG_DEBUG, "Writing regenerated entry for hash %s", overflow_hash);
+                                fprintf(temp_file, "[%s] [%s] [OVERFLOW:%s] %s\n", 
+                                        timestamp, source, overflow_hash, escaped_regenerated);
+                                entries_regenerated++;
+                            }
                         } else {
-                            msg(LOG_ERR, "Failed to regenerate display content");
+                            msg(LOG_WARNING, "Failed to parse timestamp/source from line: %.50s", line);
                             fputs(line, temp_file);
                         }
                         
-                        free(full_content);
+                        free(escaped_regenerated);
                     } else {
-                        msg(LOG_ERR, "Failed to allocate memory for full content");
+                        msg(LOG_ERR, "Failed to allocate memory for escaped content");
                         fputs(line, temp_file);
                     }
-                    fclose(overflow_file);
-                    continue;
+                    free(regenerated_content);
                 } else {
-                    msg(LOG_WARNING, "Could not open overflow file: %s", overflow_file_path);
+                    msg(LOG_ERR, "Failed to regenerate display content");
                     fputs(line, temp_file);
                 }
+                
+                free(full_content);
             } else {
-                msg(LOG_WARNING, "Failed to extract overflow hash from line: %.50s", line);
+                msg(LOG_WARNING, "Could not load full content for regeneration");
                 fputs(line, temp_file);
             }
         } else {
             fputs(line, temp_file);
         }
+        
+        line_index++;
     }
     
     fclose(history_file);
@@ -1098,7 +1079,7 @@ char* clipboard_entry_get_content(int n) {
 }
 
 static char* load_full_content_from_overflow(int index) {
-    if (!config.overflow_directory || index < 0 || index >= history_count) {
+    if (!config.overflow_directory || index < 0) {
         return NULL;
     }
     

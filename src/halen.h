@@ -50,6 +50,7 @@ typedef struct {
     PopupAnchor anchor;
     int margin_vertical;
     int margin_horizontal;
+    char *overflow_directory;
 } config_t;
 
 // Global verbose flag (defined in main.c)

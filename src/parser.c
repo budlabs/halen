@@ -1,12 +1,13 @@
 #define _GNU_SOURCE
 #include "parser.h"
-#include "halen.h"
 #include "xdg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "clipboard.h"
 #include <linux/limits.h>
+#include <sys/stat.h>
+#include "halen.h"
 
 // Initialize config with defaults
 void config_init(config_t *config) {
@@ -28,6 +29,28 @@ void config_init(config_t *config) {
     config->anchor = ANCHOR_CENTER_CENTER;
     config->margin_vertical = 10;
     config->margin_horizontal = 10;
+    
+    char *cache_directory = xdg_get_directory(XDG_CACHE_HOME);
+    if (cache_directory) {
+        size_t overflow_path_length = strlen(cache_directory) + strlen("/halen/overflow") + 1;
+        config->overflow_directory = malloc(overflow_path_length);
+        if (config->overflow_directory) {
+            snprintf(config->overflow_directory, overflow_path_length, "%s/halen/overflow", cache_directory);
+            
+            char halen_directory[PATH_MAX];
+            snprintf(halen_directory, sizeof(halen_directory), "%s/halen", cache_directory);
+            mkdir(halen_directory, 0755);
+            
+            if (mkdir(config->overflow_directory, 0755) == 0) {
+                msg(LOG_DEBUG, "Created overflow directory: %s", config->overflow_directory);
+            } else {
+                msg(LOG_WARNING, "Failed to create overflow directory: %s", config->overflow_directory);
+            }
+         }
+         free(cache_directory);
+     } else {
+        config->overflow_directory = NULL;
+    }
 }
 
 // Parse configuration file
@@ -318,6 +341,10 @@ void config_free(config_t *config) {
     if (config->history_file) {
         free(config->history_file);
         config->history_file = NULL;
+    }
+    if (config->overflow_directory) {
+        free(config->overflow_directory);
+        config->overflow_directory = NULL;
     }
 }
 

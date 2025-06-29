@@ -11,14 +11,18 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <libgen.h>
 #include <X11/extensions/Xfixes.h>
 #include <sys/syslog.h>
 #include <linux/limits.h>
+#include <sys/stat.h>
 
-#define MAX_CLIPBOARD_SIZE 4096
+// #define MAX_CLIPBOARD_SIZE 4096
+#define MAX_CLIPBOARD_ENTRIES 50
+#define MAX_CLIPBOARD_SIZE (10 * 1024 * 1024)
 
 static pthread_t clipboard_thread;
 static int clipboard_thread_running = 0;
@@ -45,6 +49,96 @@ static void poll_clipboard_changes(Display *display, Atom clipboard_atom_local, 
 static int load_history_entries(void);
 static history_entry_t entry_parse(char* line);
 static int create_history_file(const char *history_file);
+static uint32_t calculate_fast_hash(const char *content);
+
+static uint32_t calculate_fast_hash(const char *content) {
+    uint32_t hash_value = 2166136261u;
+    const uint32_t prime = 16777619u;
+    
+    for (const char *character = content; *character; character++) {
+        hash_value ^= (uint32_t)*character;
+        hash_value *= prime;
+    }
+    
+    return hash_value;
+}
+
+static char* truncate_content_for_storage(const char *content, char **overflow_hash) {
+    int content_length = strlen(content);
+    int line_count = 0;
+    int current_line_length = 0;
+    int truncate_position = 0;
+    int needs_truncation = 0;
+    
+    // Check if content exceeds limits
+    for (int i = 0; i < content_length; i++) {
+        if (content[i] == '\n') {
+            line_count++;
+            current_line_length = 0;
+            if (line_count >= config.max_lines) {
+                truncate_position = i;
+                needs_truncation = 1;
+                break;
+            }
+        } else {
+            current_line_length++;
+            if (current_line_length > config.max_line_length) {
+                truncate_position = i;
+                needs_truncation = 1;
+                break;
+            }
+        }
+    }
+    
+    if (!needs_truncation) {
+        *overflow_hash = NULL;
+        return strdup(content);
+    }
+    
+    if (!config.overflow_directory) {
+        *overflow_hash = NULL;
+        return strdup(content);
+    }
+    
+    // Create overflow file with full content
+    uint32_t content_hash = calculate_fast_hash(content);
+    *overflow_hash = malloc(16);
+    if (!*overflow_hash) {
+        return strdup(content);
+    }
+    snprintf(*overflow_hash, 16, "%08x", content_hash);
+    
+    msg(LOG_DEBUG, "Generated overflow hash: %s", *overflow_hash);
+    
+    char overflow_file_path[PATH_MAX];
+    snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
+             config.overflow_directory, *overflow_hash);
+    
+    FILE *overflow_file = fopen(overflow_file_path, "w");
+    if (overflow_file) {
+        fprintf(overflow_file, "%s", content);
+        fclose(overflow_file);
+        msg(LOG_DEBUG, "Created overflow file: %s", overflow_file_path);
+    } else {
+        msg(LOG_ERR, "Failed to create overflow file: %s", overflow_file_path);
+        free(*overflow_hash);
+        *overflow_hash = NULL;
+        return strdup(content);
+    }
+    
+    // Create truncated version with "..." marker
+    char *truncated_content = malloc(truncate_position + 4);
+    if (!truncated_content) {
+        free(*overflow_hash);
+        *overflow_hash = NULL;
+        return strdup(content);
+    }
+    
+    strncpy(truncated_content, content, truncate_position);
+    strcpy(truncated_content + truncate_position, "...");
+    
+    return truncated_content;
+}
 
 static history_entry_t entry_parse(char *line) {
     history_entry_t entry = {NULL, NULL, NULL};
@@ -187,32 +281,64 @@ static int set_clipboard_content(const char* content) {
 }
 
 static void save_to_history(const char *content, const char *source) {
+    msg(LOG_DEBUG, "save_to_history called with content length: %zu", 
+        content ? strlen(content) : 0);
+    
     if (!content || strlen(content) == 0) return;
     
+    char *overflow_hash = NULL;
+    char *storage_content = truncate_content_for_storage(content, &overflow_hash);
+    if (!storage_content) {
+        msg(LOG_ERR, "Failed to process content for storage");
+        return;
+    }
+    
+    msg(LOG_DEBUG, "Processing content for storage: overflow_hash=%s, storage_length=%zu", 
+        overflow_hash ? overflow_hash : "NULL", strlen(storage_content));
+    
     int has_content_flag = 0;
-    for (const char *p = content; *p; p++) {
+    for (const char *p = storage_content; *p; p++) {
         if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
             has_content_flag = 1;
             break;
         }
     }
-    if (!has_content_flag) return;
+    if (!has_content_flag) {
+        free(storage_content);
+        if (overflow_hash) free(overflow_hash);
+        return;
+    }
+    
+    if (!config.history_file) {
+        msg(LOG_ERR, "No history file configured");
+        free(storage_content);
+        if (overflow_hash) free(overflow_hash);
+        return;
+    }
     
     char temporary_filename[] = ".history.tmp";
     FILE *temporary_file = fopen(temporary_filename, "w");
     if (!temporary_file) {
         msg(LOG_ERR, "Failed to create temporary file");
+        free(storage_content);
+        if (overflow_hash) free(overflow_hash);
         return;
     }
-     
+    
+    msg(LOG_DEBUG, "Temporary file created, processing existing history");
+      
     FILE *existing_history_file = fopen(config.history_file, "r");
     int duplicate_found = 0;
     if (existing_history_file) {
+        msg(LOG_DEBUG, "Opened existing history file for reading");
         char line[8192];
         while (fgets(line, sizeof(line), existing_history_file)) {
+            if (strlen(line) == 0) continue;
+            
+            msg(LOG_DEBUG, "Processing history line: %.50s...", line);
             history_entry_t entry = entry_parse(line);
             if (entry.content != NULL) {
-                if (strcmp(entry.content, content) == 0) {
+                if (strcmp(entry.content, storage_content) == 0) {
                     duplicate_found = 1;
                     msg(LOG_DEBUG, "Found duplicate entry, removing old one");
                 } else {
@@ -223,10 +349,12 @@ static void save_to_history(const char *content, const char *source) {
                     }
                 }
                 
+                msg(LOG_DEBUG, "Freeing entry resources");
                 free(entry.content);
                 free(entry.timestamp);
                 free(entry.source);
             } else {
+                msg(LOG_DEBUG, "Entry parsing failed, copying line as-is");
                 if (line[strlen(line) - 1] != '\n') {
                     fprintf(temporary_file, "%s\n", line);
                 } else {
@@ -234,15 +362,28 @@ static void save_to_history(const char *content, const char *source) {
                 }
             }
         }
+        msg(LOG_DEBUG, "Finished processing history file");
         fclose(existing_history_file);
+    } else {
+        msg(LOG_DEBUG, "No existing history file found");
     }
+    
+    msg(LOG_DEBUG, "History processing complete, generating timestamp");
     
     char timestamp[32];
     get_timestamp(timestamp, sizeof(timestamp));
     
-    char *escaped_content = malloc(strlen(content) * 2 + 1);
+    size_t content_length = strlen(storage_content);
+    if (content_length == 0) {
+        msg(LOG_WARNING, "Empty storage content, skipping save");
+        goto cleanup;
+    }
+    
+    msg(LOG_DEBUG, "Starting content escaping, length: %zu", content_length);
+    
+    char *escaped_content = malloc(content_length * 2 + 1);
     if (escaped_content) {
-        const char *src = content;
+        const char *src = storage_content;
         char *dst = escaped_content;
         while (*src) {
             if (*src == '\n') {
@@ -261,26 +402,43 @@ static void save_to_history(const char *content, const char *source) {
         }
         *dst = '\0';
         
-        fprintf(temporary_file, "[%s] [%s] %s\n", timestamp, source, escaped_content);
+        msg(LOG_DEBUG, "Content escaped, writing to file");
+        
+        if (overflow_hash) {
+            fprintf(temporary_file, "[%s] [%s] [OVERFLOW:%s] %s\n", 
+                    timestamp, source, overflow_hash, escaped_content);
+        } else {
+            fprintf(temporary_file, "[%s] [%s] %s\n", timestamp, source, escaped_content);
+        }
         free(escaped_content);
     }
     
+    msg(LOG_DEBUG, "File write complete, cleaning up");
+    
+ cleanup:
     fclose(temporary_file);
+    msg(LOG_DEBUG, "Temporary file closed, renaming");
     
     if (rename(temporary_filename, config.history_file) != 0) {
         msg(LOG_ERR, "Failed to replace history file");
         unlink(temporary_filename);
+        free(storage_content);
+        if (overflow_hash) free(overflow_hash);
         return;
     }
-     
+      
     if (duplicate_found) {
-        msg(LOG_NOTICE, "Updated %s in history (removed duplicate): %.50s%s", source, content,
-            strlen(content) > 50 ? "..." : "");
+        msg(LOG_NOTICE, "Updated %s in history%s (removed duplicate): %.50s%s", 
+            source, overflow_hash ? " (truncated)" : "", storage_content,
+            strlen(storage_content) > 50 ? "..." : "");
     } else {
-        msg(LOG_NOTICE, "Saved %s to history: %.50s%s", source, content,
-            strlen(content) > 50 ? "..." : "");
+        msg(LOG_NOTICE, "Saved %s to history%s: %.50s%s", 
+            source, overflow_hash ? " (truncated)" : "", storage_content,
+            strlen(storage_content) > 50 ? "..." : "");
     }
 
+    free(storage_content);
+    if (overflow_hash) free(overflow_hash);
     load_history_entries(); 
 }
 

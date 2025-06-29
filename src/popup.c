@@ -650,6 +650,7 @@ int popup_is_showing(void) {
 }
 
 void popup_handle_expose(XExposeEvent *expose_event) {
+    (void)expose_event;
     if (showing_popup && popup_window) {
         popup_redraw();
     }

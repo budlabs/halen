@@ -56,66 +56,49 @@ static int read_history_metadata(FILE *file, history_metadata_t *metadata);
 static void write_history_metadata(FILE *file, const history_metadata_t *metadata);
 static int needs_regeneration(const history_metadata_t *stored_metadata);
 static void regenerate_truncated_entries(void);
-static history_entry_t entry_parse(char* line);
+static history_entry_t entry_parse(const char *line);
 static int create_history_file(const char *history_file);
 static uint32_t calculate_fast_hash(const char *content);
 static char* load_full_content_from_overflow(int index);
 
-// Extract escape sequence handling into a reusable function
-static char* escape_content_for_storage(const char* content) {
+
+// Replace the existing unescape_content_from_storage function with this unified version
+static char* transform_content_escaping(const char* content, int should_escape) {
     if (!content) return NULL;
     
     size_t content_length = strlen(content);
-    char *escaped_content = malloc(content_length * 2 + 1);
-    if (!escaped_content) return NULL;
+    char *result = malloc(content_length * 2 + 1);
+    if (!result) return NULL;
     
     const char *source = content;
-    char *destination = escaped_content;
-    while (*source) {
-        if (*source == '\n') {
-            *destination++ = '\\';
-            *destination++ = 'n';
-        } else if (*source == '\r') {
-            *destination++ = '\\';
-            *destination++ = 'r';
-        } else if (*source == '\t') {
-            *destination++ = '\\';
-            *destination++ = 't';
-        } else {
-            *destination++ = *source;
-        }
-        source++;
-    }
-    *destination = '\0';
+    char *destination = result;
     
-    return escaped_content;
-}
-
-// Extract unescape sequence handling into a reusable function
-static char* unescape_content_from_storage(const char* escaped_content) {
-    if (!escaped_content) return NULL;
-    
-    int content_length = strlen(escaped_content);
-    char *unescaped_content = malloc(content_length + 1);
-    if (!unescaped_content) return NULL;
-    
-    const char *source = escaped_content;
-    char *destination = unescaped_content;
-    while (*source) {
-        if (*source == '\\' && *(source + 1)) {
-            switch (*(source + 1)) {
-                case 'n': *destination++ = '\n'; source += 2; break;
-                case 'r': *destination++ = '\r'; source += 2; break;
-                case 't': *destination++ = '\t'; source += 2; break;
-                default: *destination++ = *source++; break;
+    if (should_escape) {
+        while (*source) {
+            switch (*source) {
+                case '\n': *destination++ = '\\'; *destination++ = 'n'; break;
+                case '\r': *destination++ = '\\'; *destination++ = 'r'; break;
+                case '\t': *destination++ = '\\'; *destination++ = 't'; break;
+                default: *destination++ = *source; break;
             }
-        } else {
-            *destination++ = *source++;
+            source++;
+        }
+    } else {
+        while (*source) {
+            if (*source == '\\' && *(source + 1)) {
+                switch (*(source + 1)) {
+                    case 'n': *destination++ = '\n'; source += 2; break;
+                    case 'r': *destination++ = '\r'; source += 2; break;
+                    case 't': *destination++ = '\t'; source += 2; break;
+                    default: *destination++ = *source++; break;
+                }
+            } else {
+                *destination++ = *source++;
+            }
         }
     }
     *destination = '\0';
-    
-    return unescaped_content;
+    return result;
 }
 
 // Extract overflow hash extraction logic
@@ -315,44 +298,46 @@ static char* extract_display_content(const char *raw_content) {
     return strdup(raw_content);
 }
 
-static history_entry_t entry_parse(char *line) {
+static history_entry_t entry_parse(const char *line) {
     history_entry_t entry = {NULL, NULL, NULL};
     
-    line[strcspn(line, "\n")] = 0;
+    char *line_copy = strdup(line);
+    if (!line_copy) return entry;
     
-    if (strlen(line) < 10) {
-        msg(LOG_WARNING, "Invalid history entry: '%s'", line);
+    line_copy[strcspn(line_copy, "\n")] = 0;
+    
+    if (strlen(line_copy) < 10) {
+        msg(LOG_WARNING, "Invalid history entry: '%s'", line_copy);
+        free(line_copy);
         return entry;
     }
     
-    // Parse: [timestamp] [source] content
-    char *timestamp_start = strchr(line, '[');
-    char *timestamp_end = strchr(line, ']');
+    char *timestamp_start = strchr(line_copy, '[');
+    char *timestamp_end = strchr(line_copy, ']');
     char *source_start = strchr(timestamp_end + 1, '[');
     char *source_end = strchr(source_start + 1, ']');
-    char *content_start = source_end + 2; // Skip "] "
+    char *content_start = source_end + 2;
     
     if (!timestamp_start || !timestamp_end || !source_start || !source_end) {
-        msg(LOG_WARNING, "Invalid history entry format: '%s'", line);
+        msg(LOG_WARNING, "Invalid history entry format: '%s'", line_copy);
+        free(line_copy);
         return entry;
     }
     
-    // Extract timestamp
-    int timestamp_len = timestamp_end - timestamp_start - 1;
-    entry.timestamp = malloc(timestamp_len + 1);
-    strncpy(entry.timestamp, timestamp_start + 1, timestamp_len);
-    entry.timestamp[timestamp_len] = '\0';
+    int timestamp_length = timestamp_end - timestamp_start - 1;
+    entry.timestamp = malloc(timestamp_length + 1);
+    strncpy(entry.timestamp, timestamp_start + 1, timestamp_length);
+    entry.timestamp[timestamp_length] = '\0';
     
-    // Extract source (CLIPBOARD or PRIMARY)
-    int source_len = source_end - source_start - 1;
-    entry.source = malloc(source_len + 1);
-    strncpy(entry.source, source_start + 1, source_len);
-    entry.source[source_len] = '\0';
+    int source_length = source_end - source_start - 1;
+    entry.source = malloc(source_length + 1);
+    strncpy(entry.source, source_start + 1, source_length);
+    entry.source[source_length] = '\0';
     
-    // Extract and unescape content
     char *display_content = extract_display_content(content_start);
-    entry.content = unescape_content_from_storage(display_content);
+    entry.content = transform_content_escaping(display_content, 0);
     free(display_content);
+    free(line_copy);
 
     return entry;
 }
@@ -536,7 +521,8 @@ static void save_to_history(const char *content, const char *source) {
         goto cleanup;
     }
     
-    char *escaped_content = escape_content_for_storage(storage_content);
+    // Add missing helper function
+    char *escaped_content = transform_content_escaping(storage_content, 1);
     if (escaped_content) {
         if (overflow_hash) {
             fprintf(temporary_file, "[%s] [%s] [OVERFLOW:%s] %s\n", 
@@ -818,7 +804,7 @@ static void regenerate_truncated_entries(void) {
             if (full_content) {
                 char *regenerated_content = create_display_formatted_content(full_content);
                 if (regenerated_content) {
-                    char *escaped_regenerated = escape_content_for_storage(regenerated_content);
+                    char *escaped_regenerated = transform_content_escaping(regenerated_content, 1);
                     if (escaped_regenerated) {
                         char timestamp[32], source[16];
                         if (sscanf(line, "[%31[^]]] [%15[^]]]", timestamp, source) == 2) {
@@ -1010,17 +996,17 @@ static int delete_history_entry(int index) {
         return 0;
     }
     
-    char temporary_filename[] = ".history.tmp";
-    FILE *temporary_file = fopen(temporary_filename, "w");
-    if (!temporary_file) {
+    char temp_filename[] = ".history.tmp";
+    FILE *temp_file = fopen(temp_filename, "w");
+    if (!temp_file) {
         msg(LOG_ERR, "Failed to create temporary file for deletion");
         return 0;
     }
     
     FILE *history_file = fopen(config.history_file, "r");
     if (!history_file) {
-        fclose(temporary_file);
-        unlink(temporary_filename);
+        fclose(temp_file);
+        unlink(temp_filename);
         return 0;
     }
     
@@ -1030,12 +1016,12 @@ static int delete_history_entry(int index) {
     char *overflow_hash_to_delete = NULL;
     
     if (fgets(line, sizeof(line), history_file)) {
-        fputs(line, temporary_file);
+        fputs(line, temp_file);
     }
     
     while (fgets(line, sizeof(line), history_file)) {
         if (strlen(line) < 10) {
-            fputs(line, temporary_file);
+            fputs(line, temp_file);
             continue;
         }
         
@@ -1049,13 +1035,13 @@ static int delete_history_entry(int index) {
             msg(LOG_NOTICE, "Deleted history entry %d: %.50s", 
                 index + 1, history_entries[index].content);
         } else {
-            fputs(line, temporary_file);
+            fputs(line, temp_file);
         }
         current_index++;
     }
     
     fclose(history_file);
-    fclose(temporary_file);
+    fclose(temp_file);
     
     if (deleted) {
         if (overflow_hash_to_delete && config.overflow_directory) {
@@ -1071,7 +1057,7 @@ static int delete_history_entry(int index) {
             free(overflow_hash_to_delete);
         }
         
-        if (!replace_file_atomically(temporary_filename, config.history_file)) {
+        if (!replace_file_atomically(temp_filename, config.history_file)) {
             msg(LOG_ERR, "Failed to replace history file after deletion");
             return 0;
         }
@@ -1084,7 +1070,7 @@ static int delete_history_entry(int index) {
         
         return 1;
     } else {
-        unlink(temporary_filename);
+        unlink(temp_filename);
         return 0;
     }
 }

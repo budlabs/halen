@@ -14,7 +14,8 @@ int clipboard_start_monitoring_async(void);
 void clipboard_stop_monitoring(void);
 
 // Get clipboard history entry by index (0 = oldest, -1 = latest)
-char* clipboard_get_entry(int n);
+char* clipboard_entry_get_truncated(int n);
+char* clipboard_entry_get_content(int n);
 
 char* clipboard_history_file_default_path(void);
 

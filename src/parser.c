@@ -2,6 +2,7 @@
 #include "parser.h"
 #include "xdg.h"
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "clipboard.h"
@@ -39,18 +40,25 @@ void config_init(config_t *config) {
             
             char halen_directory[PATH_MAX];
             snprintf(halen_directory, sizeof(halen_directory), "%s/halen", cache_directory);
-            mkdir(halen_directory, 0755);
             
-            if (mkdir(config->overflow_directory, 0755) == 0) {
-                msg(LOG_DEBUG, "Created overflow directory: %s", config->overflow_directory);
-            } else {
-                msg(LOG_WARNING, "Failed to create overflow directory: %s", config->overflow_directory);
+            if (mkdir(halen_directory, 0755) == 0) {
+                msg(LOG_DEBUG, "Created halen directory: %s", halen_directory);
+            } else if (errno != EEXIST) {
+                msg(LOG_WARNING, "Failed to create halen directory: %s", halen_directory);
             }
-         }
-         free(cache_directory);
-     } else {
-        config->overflow_directory = NULL;
-    }
+             
+             if (mkdir(config->overflow_directory, 0755) == 0) {
+                 msg(LOG_DEBUG, "Created overflow directory: %s", config->overflow_directory);
+            } else if (errno != EEXIST) {
+                 msg(LOG_WARNING, "Failed to create overflow directory: %s", config->overflow_directory);
+            } else {
+                msg(LOG_DEBUG, "Overflow directory already exists: %s", config->overflow_directory);
+             }
+          }
+          free(cache_directory);
+      } else {
+         config->overflow_directory = NULL;
+     }
 }
 
 // Parse configuration file

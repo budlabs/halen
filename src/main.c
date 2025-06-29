@@ -194,7 +194,7 @@ void hotkey_event_callback(const char *event_type) {
     if (strcmp(event_type, "double_paste") == 0) {
         msg(LOG_NOTICE, "Ctrl+V+V: show popup");
         
-        char *latest_entry = clipboard_get_entry(-1);
+        char *latest_entry = clipboard_entry_get_truncated(-1);
         if (latest_entry) {
             clipboard_set_current_index(-1);
             if (!popup_show(latest_entry)) {
@@ -222,7 +222,7 @@ void hotkey_event_callback(const char *event_type) {
                 next_index = current_index - 1;
             }
             
-            char *next_entry = clipboard_get_entry(next_index);
+            char *next_entry = clipboard_entry_get_truncated(next_index);
             if (next_entry) {
                 clipboard_set_current_index(next_index);
                 if (popup_is_showing()) {
@@ -252,7 +252,7 @@ void hotkey_event_callback(const char *event_type) {
                 prev_index = current_index + 1;
             }
             
-            char *prev_entry = clipboard_get_entry(prev_index);
+            char *prev_entry = clipboard_entry_get_truncated(prev_index);
             if (prev_entry) {
                 clipboard_set_current_index(prev_index);
                 if (popup_is_showing()) {
@@ -274,7 +274,7 @@ void hotkey_event_callback(const char *event_type) {
         
         int current_index = clipboard_get_current_index();
         if (current_index >= 0) {
-            char *selected_entry = clipboard_get_entry(current_index);
+            char *selected_entry = clipboard_entry_get_content(current_index);
             if (selected_entry) {
                 // (this will trigger our clipboard listener and move entry to top of history)
                 clipboard_set_content(selected_entry);
@@ -329,7 +329,7 @@ void hotkey_event_callback(const char *event_type) {
                     }
                     
                     // Update popup with new entry
-                    char *new_entry = clipboard_get_entry(new_index);
+                    char *new_entry = clipboard_entry_get_truncated(new_index);
                     if (new_entry) {
                         clipboard_set_current_index(new_index);
                         if (popup_is_showing()) {
@@ -366,7 +366,7 @@ void hotkey_event_callback(const char *event_type) {
             && (action == POPUP_ACTION_NEXT || action == POPUP_ACTION_PREV)) {
             int current_index = clipboard_get_current_index();
             if (current_index >= 0) {
-                char *selected_entry = clipboard_get_entry(current_index);
+                char *selected_entry = clipboard_entry_get_content(current_index);
                 if (selected_entry) {
                     clipboard_set_content(selected_entry);
                     usleep(50000); // 50ms

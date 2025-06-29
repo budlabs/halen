@@ -23,6 +23,12 @@
 // #define MAX_CLIPBOARD_SIZE 4096
 #define MAX_CLIPBOARD_ENTRIES 50
 #define MAX_CLIPBOARD_SIZE (10 * 1024 * 1024)
+#define METADATA_PREFIX "# HALEN_METADATA: "
+
+typedef struct {
+    int max_lines;
+    int max_line_length;
+} history_metadata_t;
 
 static pthread_t clipboard_thread;
 static int clipboard_thread_running = 0;
@@ -47,9 +53,14 @@ static void save_to_history(const char *content, const char *source);
 static void get_timestamp(char *buffer, size_t size);
 static void poll_clipboard_changes(Display *display, Atom clipboard_atom_local, Atom primary_atom_local);
 static int load_history_entries(void);
+static int read_history_metadata(FILE *file, history_metadata_t *metadata);
+static void write_history_metadata(FILE *file, const history_metadata_t *metadata);
+static int needs_regeneration(const history_metadata_t *stored_metadata);
+static void regenerate_truncated_entries(void);
 static history_entry_t entry_parse(char* line);
 static int create_history_file(const char *history_file);
 static uint32_t calculate_fast_hash(const char *content);
+static char* load_full_content_from_overflow(int index);
 
 static uint32_t calculate_fast_hash(const char *content) {
     uint32_t hash_value = 2166136261u;
@@ -129,7 +140,6 @@ static char* truncate_content_for_storage(const char *content, char **overflow_h
     int content_length = strlen(content);
     int line_count = 0;
     int current_line_length = 0;
-    int truncate_position = 0;
     int needs_truncation = 0;
     
     // Check if content exceeds limits
@@ -138,14 +148,12 @@ static char* truncate_content_for_storage(const char *content, char **overflow_h
             line_count++;
             current_line_length = 0;
             if (line_count >= config.max_lines) {
-                truncate_position = i;
                 needs_truncation = 1;
                 break;
             }
         } else {
             current_line_length++;
             if (current_line_length > config.max_line_length) {
-                truncate_position = i;
                 needs_truncation = 1;
                 break;
             }
@@ -393,13 +401,19 @@ static void save_to_history(const char *content, const char *source) {
         if (overflow_hash) free(overflow_hash);
         return;
     }
-
+    
+    history_metadata_t current_metadata = { config.max_lines, config.max_line_length };
+    write_history_metadata(temporary_file, &current_metadata);
+ 
     int duplicate_found = 0;
     
     FILE *existing_history_file = fopen(config.history_file, "r");
     if (existing_history_file) {
         char line[8192];
-        while (fgets(line, sizeof(line), existing_history_file)) {
+        
+        fgets(line, sizeof(line), existing_history_file);
+        
+         while (fgets(line, sizeof(line), existing_history_file)) {
             if (strlen(line) == 0) continue;
             
             history_entry_t entry = entry_parse(line);
@@ -674,6 +688,181 @@ static void* clipboard_monitor_thread(void* arg) {
     return NULL;
 }
 
+static int read_history_metadata(FILE *file, history_metadata_t *metadata) {
+    char line[256];
+    rewind(file);
+    
+    if (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, METADATA_PREFIX, strlen(METADATA_PREFIX)) == 0) {
+            char *metadata_content = line + strlen(METADATA_PREFIX);
+            if (sscanf(metadata_content, "max_lines=%d max_line_length=%d", 
+                      &metadata->max_lines, &metadata->max_line_length) == 2) {
+                return 1;
+            }
+        }
+    }
+    
+    metadata->max_lines = -1;
+    metadata->max_line_length = -1;
+    return 0;
+}
+
+static void write_history_metadata(FILE *file, const history_metadata_t *metadata) {
+    fprintf(file, "%smax_lines=%d max_line_length=%d\n", 
+            METADATA_PREFIX, metadata->max_lines, metadata->max_line_length);
+}
+
+static int needs_regeneration(const history_metadata_t *stored_metadata) {
+    // Always regenerate if metadata doesn't match current settings
+    if (stored_metadata->max_lines != config.max_lines || 
+        stored_metadata->max_line_length != config.max_line_length) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+static void regenerate_truncated_entries(void) {
+    if (!config.history_file) return;
+    
+    if (!config.overflow_directory) {
+        msg(LOG_WARNING, "No overflow directory configured, skipping regeneration");
+        return;
+    }
+    
+    msg(LOG_DEBUG, "Using overflow directory: %s", config.overflow_directory);
+    
+    msg(LOG_NOTICE, "Regenerating truncated entries with new settings: max_lines=%d, max_line_length=%d", 
+        config.max_lines, config.max_line_length);
+    
+    FILE *history_file = fopen(config.history_file, "r");
+    if (!history_file) return;
+    
+    char temp_filename[] = ".history_regen.tmp";
+    FILE *temp_file = fopen(temp_filename, "w");
+    if (!temp_file) {
+        fclose(history_file);
+        return;
+    }
+    
+    history_metadata_t current_metadata = {
+        .max_lines = config.max_lines,
+        .max_line_length = config.max_line_length
+    };
+    write_history_metadata(temp_file, &current_metadata);
+    
+    char line[8192];
+    fgets(line, sizeof(line), history_file);
+    
+    int entries_regenerated = 0;
+    
+    while (fgets(line, sizeof(line), history_file)) {
+        if (strlen(line) < 10) {
+            fputs(line, temp_file);
+            continue;
+        }
+        
+        if (strstr(line, "[OVERFLOW:") != NULL) {
+            msg(LOG_DEBUG, "Found overflow entry to regenerate: %.60s", line);
+            char overflow_hash[16];
+            char *overflow_marker = strstr(line, "[OVERFLOW:");
+            if (overflow_marker && sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash) == 1) {
+                msg(LOG_DEBUG, "Extracted overflow hash: %s", overflow_hash);
+                char overflow_file_path[PATH_MAX];
+                snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
+                        config.overflow_directory, overflow_hash);
+                
+                msg(LOG_DEBUG, "Trying to open overflow file: %s", overflow_file_path);
+                
+                FILE *overflow_file = fopen(overflow_file_path, "r");
+                if (overflow_file) {
+                    msg(LOG_DEBUG, "Successfully opened overflow file: %s", overflow_file_path);
+                    char *full_content = malloc(MAX_CLIPBOARD_SIZE);
+                    if (full_content) {
+                        size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
+                        full_content[content_size] = '\0';
+                        msg(LOG_DEBUG, "Read %zu bytes from overflow file", content_size);
+                        
+                        char *regenerated_content = create_display_formatted_content(full_content);
+                        if (regenerated_content) {
+                            msg(LOG_DEBUG, "Successfully regenerated content");
+                            size_t regenerated_length = strlen(regenerated_content);
+                            char *escaped_regenerated = malloc(regenerated_length * 2 + 1);
+                            if (escaped_regenerated) {
+                                const char *src = regenerated_content;
+                                char *dst = escaped_regenerated;
+                                while (*src) {
+                                    if (*src == '\n') {
+                                        *dst++ = '\\';
+                                        *dst++ = 'n';
+                                    } else if (*src == '\r') {
+                                        *dst++ = '\\';
+                                        *dst++ = 'r';
+                                    } else if (*src == '\t') {
+                                        *dst++ = '\\';
+                                        *dst++ = 't';
+                                    } else {
+                                        *dst++ = *src;
+                                    }
+                                    src++;
+                                }
+                                *dst = '\0';
+                                
+                                char timestamp[32], source[16];
+                                if (sscanf(line, "[%31[^]]] [%15[^]]]", timestamp, source) == 2) {
+                                    msg(LOG_DEBUG, "Writing regenerated entry for hash %s", overflow_hash);
+                                    fprintf(temp_file, "[%s] [%s] [OVERFLOW:%s] %s\n", 
+                                            timestamp, source, overflow_hash, escaped_regenerated);
+                                    entries_regenerated++;
+                                } else {
+                                    msg(LOG_WARNING, "Failed to parse timestamp/source from line: %.50s", line);
+                                    fputs(line, temp_file);
+                                }
+                                
+                                free(escaped_regenerated);
+                            } else {
+                                msg(LOG_ERR, "Failed to allocate memory for escaped content");
+                                fputs(line, temp_file);
+                            }
+                            free(regenerated_content);
+                        } else {
+                            msg(LOG_ERR, "Failed to regenerate display content");
+                            fputs(line, temp_file);
+                        }
+                        
+                        free(full_content);
+                    } else {
+                        msg(LOG_ERR, "Failed to allocate memory for full content");
+                        fputs(line, temp_file);
+                    }
+                    fclose(overflow_file);
+                    continue;
+                } else {
+                    msg(LOG_WARNING, "Could not open overflow file: %s", overflow_file_path);
+                    fputs(line, temp_file);
+                }
+            } else {
+                msg(LOG_WARNING, "Failed to extract overflow hash from line: %.50s", line);
+                fputs(line, temp_file);
+            }
+        } else {
+            fputs(line, temp_file);
+        }
+    }
+    
+    fclose(history_file);
+    fclose(temp_file);
+    
+    if (entries_regenerated > 0) {
+        msg(LOG_NOTICE, "Regenerated %d entries, replacing history file", entries_regenerated);
+        rename(temp_filename, config.history_file);
+        msg(LOG_NOTICE, "History entries regenerated successfully");
+    } else {
+        msg(LOG_DEBUG, "No entries needed regeneration, removing temp file");
+        unlink(temp_filename);
+    }
+}
+
 char* clipboard_history_file_default_path(void) {
     static char history_path[PATH_MAX];
     char *cache_dir = xdg_get_directory(XDG_CACHE_HOME);
@@ -709,6 +898,10 @@ static int create_history_file(const char *history_file) {
         msg(LOG_ERR, "Failed to create history file: %s", history_file);
         return 0;
     }
+    
+    history_metadata_t metadata = { config.max_lines, config.max_line_length };
+    write_history_metadata(file, &metadata);
+    
     fclose(file);
     msg(LOG_DEBUG, "Created history file: %s", history_file);
     return 1;
@@ -726,18 +919,42 @@ static int load_history_entries(void) {
         history_entries = NULL;
     }
     
+    FILE *metadata_check_file = fopen(config.history_file, "r");
+    if (metadata_check_file) {
+        history_metadata_t stored_metadata;
+        if (read_history_metadata(metadata_check_file, &stored_metadata)) {
+            msg(LOG_DEBUG, "Found metadata: max_lines=%d, max_line_length=%d", 
+                stored_metadata.max_lines, stored_metadata.max_line_length);
+            msg(LOG_DEBUG, "Current config: max_lines=%d, max_line_length=%d", 
+                config.max_lines, config.max_line_length);
+            
+            if (needs_regeneration(&stored_metadata)) {
+                msg(LOG_NOTICE, "Settings changed, regenerating truncated entries");
+                fclose(metadata_check_file);
+                regenerate_truncated_entries();
+                metadata_check_file = fopen(config.history_file, "r");
+            } else {
+                msg(LOG_DEBUG, "Settings unchanged, no regeneration needed");
+            }
+        } else {
+            msg(LOG_NOTICE, "No metadata found, assuming regeneration needed");
+            fclose(metadata_check_file);
+            regenerate_truncated_entries();
+            metadata_check_file = fopen(config.history_file, "r");
+        }
+        if (metadata_check_file) fclose(metadata_check_file);
+    }
+    
     FILE *history_file = fopen(config.history_file, "r");
     if (!history_file) {
         msg(LOG_DEBUG, "History file doesn't exist, creating with initial entry");
 
-        // Try to get current clipboard content
         char *current_clipboard = get_clipboard_content("clipboard");
         const char *initial_content = current_clipboard ? current_clipboard : "Clipboard Empty";
 
         create_history_file(config.history_file);
         save_to_history(initial_content, "CLIPBOARD");
         
-        // Try opening again after creating
         history_file = fopen(config.history_file, "r");
         if (!history_file) {
             msg(LOG_ERR, "Failed to open history file after creating it");
@@ -746,11 +963,13 @@ static int load_history_entries(void) {
         }
     }
     
-    // Count lines first
     history_count = 0;
     char line[8192];
+    
+    fgets(line, sizeof(line), history_file);
+    
     while (fgets(line, sizeof(line), history_file)) {
-        if (strlen(line) > 10) { // Skip empty/short lines
+        if (strlen(line) > 10) {
             history_count++;
         }
     }
@@ -760,7 +979,6 @@ static int load_history_entries(void) {
         return 0;
     }
     
-    // Allocate memory for entries
     history_entries = malloc(history_count * sizeof(history_entry_t));
     if (!history_entries) {
         fclose(history_file);
@@ -768,8 +986,10 @@ static int load_history_entries(void) {
         return 0;
     }
     
-    // Read entries
     rewind(history_file);
+    
+    fgets(line, sizeof(line), history_file);
+    
     int index = 0;
     while (fgets(line, sizeof(line), history_file) && index < history_count) {
         history_entry_t entry = entry_parse(line);
@@ -812,9 +1032,13 @@ void clipboard_set_current_index(int index) {
     }
 }
 
+void clipboard_reset_navigation(void) {
+    current_history_index = -1;
+}
+
 // Get clipboard history entry by index
 // n = 0: oldest entry, n = history_count-1: latest entry, n = -1: latest entry
-char* clipboard_get_entry(int n) {
+char* clipboard_entry_get_truncated(int n) {
     if (history_count < 1) load_history_entries();
     if (history_count < 1) {
         msg(LOG_WARNING, "No history entries available to get");
@@ -823,15 +1047,15 @@ char* clipboard_get_entry(int n) {
     
     int index;
     if (n == -1) {
-        index = history_count - 1; // Latest entry
+        index = history_count - 1;
     } else if (n >= 0 && n < history_count) {
         index = n;
     } else {
-        return NULL; // Invalid index
+        return NULL;
     }
     
     if (index >= 0 && index < history_count) {
-        msg(LOG_DEBUG, "Getting history entry %d/%d: %.50s", 
+        msg(LOG_DEBUG, "Getting truncated history entry %d/%d: %.50s", 
             index + 1, history_count, 
             history_entries[index].content);
         return strdup(history_entries[index].content);
@@ -840,8 +1064,90 @@ char* clipboard_get_entry(int n) {
     return NULL;
 }
 
-void clipboard_reset_navigation(void) {
-    current_history_index = -1;
+char* clipboard_entry_get_content(int n) {
+    if (history_count < 1) load_history_entries();
+    if (history_count < 1) {
+        msg(LOG_WARNING, "No history entries available to get");
+        return NULL;
+    }
+    
+    int index;
+    if (n == -1) {
+        index = history_count - 1;
+    } else if (n >= 0 && n < history_count) {
+        index = n;
+    } else {
+        return NULL;
+    }
+    
+    if (index >= 0 && index < history_count) {
+        char *full_content = load_full_content_from_overflow(index);
+        if (full_content) {
+            msg(LOG_DEBUG, "Retrieved full content from overflow for entry %d/%d: %.50s", 
+                index + 1, history_count, full_content);
+            return full_content;
+        }
+        
+        msg(LOG_DEBUG, "Getting regular history entry %d/%d: %.50s", 
+            index + 1, history_count, 
+            history_entries[index].content);
+        return strdup(history_entries[index].content);
+    }
+    
+    return NULL;
+}
+
+static char* load_full_content_from_overflow(int index) {
+    if (!config.overflow_directory || index < 0 || index >= history_count) {
+        return NULL;
+    }
+    
+    FILE *history_file = fopen(config.history_file, "r");
+    if (!history_file) return NULL;
+    
+    char line[8192];
+    int current_index = 0;
+    
+    fgets(line, sizeof(line), history_file);
+    
+    while (fgets(line, sizeof(line), history_file)) {
+        if (strlen(line) < 10) continue;
+        
+        if (current_index == index) {
+            char *overflow_marker = strstr(line, "[OVERFLOW:");
+            if (overflow_marker) {
+                char overflow_hash[16];
+                if (sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash) == 1) {
+                    fclose(history_file);
+                    
+                    char overflow_file_path[PATH_MAX];
+                    snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
+                            config.overflow_directory, overflow_hash);
+                    
+                    FILE *overflow_file = fopen(overflow_file_path, "r");
+                    if (overflow_file) {
+                        char *full_content = malloc(MAX_CLIPBOARD_SIZE);
+                        if (full_content) {
+                            size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
+                            full_content[content_size] = '\0';
+                            fclose(overflow_file);
+                            
+                            msg(LOG_DEBUG, "Loaded full content from overflow file: %s", overflow_file_path);
+                            return full_content;
+                        }
+                        fclose(overflow_file);
+                    } else {
+                        msg(LOG_WARNING, "Could not open overflow file: %s", overflow_file_path);
+                    }
+                }
+            }
+            break;
+        }
+        current_index++;
+    }
+    
+    fclose(history_file);
+    return NULL;
 }
 
 static int delete_history_entry(int index) {

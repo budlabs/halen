@@ -136,8 +136,25 @@ static char* truncate_content_for_storage(const char *content, char **overflow_h
     return truncated_content;
 }
 
+static char* extract_display_content(const char *raw_content) {
+    if (!raw_content) return NULL;
+    
+    const char *overflow_marker = "[OVERFLOW:";
+    const char *overflow_start = strstr(raw_content, overflow_marker);
+    
+    if (overflow_start) {
+        const char *content_start = strchr(overflow_start, ']');
+        if (content_start && content_start[1] == ' ') {
+            return strdup(content_start + 2);
+        }
+    }
+    
+    return strdup(raw_content);
+}
+
 static history_entry_t entry_parse(char *line) {
     history_entry_t entry = {NULL, NULL, NULL};
+    
     line[strcspn(line, "\n")] = 0;
     
     if (strlen(line) < 10) {
@@ -279,9 +296,14 @@ static int set_clipboard_content(const char* content) {
 static void save_to_history(const char *content, const char *source) {
     if (!content || strlen(content) == 0) return;
     
-    char *overflow_hash = NULL;
-    char *storage_content = truncate_content_for_storage(content, &overflow_hash);
-    if (!storage_content) {
+    // Generate hash of original content for duplicate detection
+    uint32_t original_content_hash = calculate_fast_hash(content);
+    char original_hash_string[16];
+    snprintf(original_hash_string, sizeof(original_hash_string), "%08x", original_content_hash);
+    
+     char *overflow_hash = NULL;
+     char *storage_content = truncate_content_for_storage(content, &overflow_hash);
+     if (!storage_content) {
         return;
     }
     
@@ -311,9 +333,10 @@ static void save_to_history(const char *content, const char *source) {
         if (overflow_hash) free(overflow_hash);
         return;
     }
+
+    int duplicate_found = 0;
     
     FILE *existing_history_file = fopen(config.history_file, "r");
-    int duplicate_found = 0;
     if (existing_history_file) {
         char line[8192];
         while (fgets(line, sizeof(line), existing_history_file)) {
@@ -321,7 +344,22 @@ static void save_to_history(const char *content, const char *source) {
             
             history_entry_t entry = entry_parse(line);
             if (entry.content != NULL) {
-                if (strcmp(entry.content, storage_content) == 0) {
+                int is_duplicate = 0;
+                
+                // Check if this entry has an overflow hash
+                if (strstr(line, "[OVERFLOW:") != NULL) {
+                    char overflow_pattern[32];
+                    if (overflow_hash) {
+                        snprintf(overflow_pattern, sizeof(overflow_pattern), "[OVERFLOW:%s]", overflow_hash);
+                        is_duplicate = (strstr(line, overflow_pattern) != NULL);
+                    } else {
+                        is_duplicate = 0;
+                    }
+                } else {
+                    is_duplicate = (strcmp(entry.content, content) == 0);
+                }
+                
+                if (is_duplicate) {
                     duplicate_found = 1;
                 } else {
                     if (line[strlen(line) - 1] != '\n') {

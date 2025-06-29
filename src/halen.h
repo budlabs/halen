@@ -7,12 +7,30 @@
 
 typedef enum {
     POPUP_ACTION_NONE = 0,
-    POPUP_ACTION_NEXT,    // V key - navigate to next (older) entry
-    POPUP_ACTION_PREV,    // C key - navigate to previous (newer) entry
-    POPUP_ACTION_CUT,     // X key - close popup and cut current entry
-    POPUP_ACTION_DELETE,  // D key - delete current entry from history
-    POPUP_ACTION_CANCEL   // Z key - cancel and exit without selecting
+    POPUP_ACTION_NEXT,
+    POPUP_ACTION_PREV,
+    POPUP_ACTION_CUT,
+    POPUP_ACTION_DELETE,
+    POPUP_ACTION_CANCEL
 } PopupAction;
+
+typedef enum {
+    ANCHOR_TOP_LEFT = 1,
+    ANCHOR_TOP_CENTER = 2,
+    ANCHOR_TOP_RIGHT = 3,
+    ANCHOR_CENTER_LEFT = 4,
+    ANCHOR_CENTER_CENTER = 5,
+    ANCHOR_CENTER_RIGHT = 6,
+    ANCHOR_BOTTOM_LEFT = 7,
+    ANCHOR_BOTTOM_CENTER = 8,
+    ANCHOR_BOTTOM_RIGHT = 9
+} PopupAnchor;
+
+typedef enum {
+    POPUP_POSITION_MOUSE,
+    POPUP_POSITION_SCREEN,
+    POPUP_POSITION_ABSOLUTE
+} PopupPosition;
 
 typedef struct {
     int verbose;
@@ -25,7 +43,12 @@ typedef struct {
     int font_size;
     int background; // Color for popup background
     int foreground;       // Color for popup text
-    int count_color;       // Color for popup text
+    int count_color;       // Color for count text
+    PopupPosition position;
+    int position_x;
+    int position_y;
+    PopupAnchor anchor;
+    int margin;
 } config_t;
 
 // Global verbose flag (defined in main.c)

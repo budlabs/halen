@@ -15,13 +15,18 @@ void config_init(config_t *config) {
     char *default_path = clipboard_history_file_default_path();
     config->history_file = strdup(default_path);
     config->timeout = 2;
-    config->max_lines = 10;  // Default max lines in popup
-    config->max_line_length = 80;  // Default max line length in popup
+    config->max_lines = 10;
+    config->max_line_length = 80;
     config->font = strdup("monospace");
-    config->font_size = 12;  // Default font size in popup
-    config->background = 0xFFFFFF;  // Default background color (white)
-    config->foreground = 0xFF0000;  // Default foreground color (black)
-    config->count_color = 0xFF0000;  // Default foreground color (black)
+    config->font_size = 12;
+    config->background = 0xFFFFFF;
+    config->foreground = 0x000000;
+    config->count_color = 0xFF0000;
+    config->position = POPUP_POSITION_MOUSE;
+    config->position_x = 0;
+    config->position_y = 0;
+    config->anchor = ANCHOR_CENTER_CENTER;
+    config->margin = 10;
 }
 
 // Parse configuration file
@@ -200,6 +205,63 @@ int config_parse_file(config_t *config, const char *filename) {
                 msg(LOG_WARNING, "Invalid foreground color format '%s' on line %d (must be #RRGGBB)", value, line_num);
             }
             
+        } else if (strcmp(key, "position") == 0) {
+            if (strcasecmp(value, "mouse") == 0) {
+                config->position = POPUP_POSITION_MOUSE;
+                config->position_x = 0;
+                config->position_y = 0;
+                msg(LOG_DEBUG, "Config: position = MOUSE");
+            } else if (strcasecmp(value, "screen") == 0) {
+                config->position = POPUP_POSITION_SCREEN;
+                config->position_x = 0;
+                config->position_y = 0;
+                msg(LOG_DEBUG, "Config: position = SCREEN");
+            } else {
+                char *colon = strchr(value, ':');
+                if (colon) {
+                    *colon = '\0';
+                    char *x_str = value;
+                    char *y_str = colon + 1;
+                    
+                    char *x_endptr, *y_endptr;
+                    long x_value = strtol(x_str, &x_endptr, 10);
+                    long y_value = strtol(y_str, &y_endptr, 10);
+                    
+                    if (*x_endptr == '\0' && *y_endptr == '\0' && 
+                        x_value >= 0 && x_value <= 9999 &&
+                        y_value >= 0 && y_value <= 9999) {
+                        config->position = POPUP_POSITION_ABSOLUTE;
+                        config->position_x = (int)x_value;
+                        config->position_y = (int)y_value;
+                        msg(LOG_DEBUG, "Config: position = ABSOLUTE (%d:%d)", config->position_x, config->position_y);
+                    } else {
+                        msg(LOG_WARNING, "Invalid absolute position '%s' on line %d (must be X:Y with valid coordinates)", value, line_num);
+                    }
+                } else {
+                    msg(LOG_WARNING, "Invalid position value '%s' on line %d (must be 'mouse', 'screen' or 'X:Y')", value, line_num);
+                }
+            }
+
+        } else if (strcmp(key, "anchor") == 0) {
+            char *endptr;
+            long anchor_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && anchor_value >= 1 && anchor_value <= 9) {
+                config->anchor = (PopupAnchor)anchor_value;
+                msg(LOG_DEBUG, "Config: anchor = %d", config->anchor);
+            } else {
+                msg(LOG_WARNING, "Invalid anchor value '%s' on line %d (must be 1-9)", value, line_num);
+            }
+            
+        } else if (strcmp(key, "margin") == 0) {
+            char *endptr;
+            long margin_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && margin_value >= 0 && margin_value <= 100) {
+                config->margin = (int)margin_value;
+                msg(LOG_DEBUG, "Config: margin = %d", config->margin);
+            } else {
+                msg(LOG_WARNING, "Invalid margin value '%s' on line %d (must be 0-100)", value, line_num);
+            }
+            
         } else {
             msg(LOG_WARNING, "Unknown config option '%s' on line %d", key, line_num);
         }
@@ -241,4 +303,29 @@ void config_print(const config_t *config) {
     msg(LOG_NOTICE, "  logfile: %s", config->logfile ? config->logfile : "(stdout)");
     msg(LOG_NOTICE, "  history_file: %s", config->history_file ? config->history_file : "(default)");
     msg(LOG_NOTICE, "  timeout: %d seconds", config->timeout);
+    
+    const char *position_description;
+    switch (config->position) {
+        case POPUP_POSITION_MOUSE:
+            position_description = "mouse";
+            break;
+        case POPUP_POSITION_SCREEN:
+            position_description = "screen";
+            break;
+        case POPUP_POSITION_ABSOLUTE:
+            position_description = "absolute";
+            break;
+        default:
+            position_description = "unknown";
+            break;
+    }
+    
+    if (config->position == POPUP_POSITION_ABSOLUTE) {
+        msg(LOG_NOTICE, "  position: %s (%d:%d)", position_description, config->position_x, config->position_y);
+    } else {
+        msg(LOG_NOTICE, "  position: %s", position_description);
+    }
+    
+    msg(LOG_NOTICE, "  anchor: %d", config->anchor);
+    msg(LOG_NOTICE, "  margin: %d pixels", config->margin);
 }

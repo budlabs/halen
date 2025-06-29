@@ -1156,56 +1156,84 @@ static int delete_history_entry(int index) {
         return 0;
     }
     
-    // Create temporary file
-    char temp_filename[] = ".history.tmp";
-    FILE *temp_file = fopen(temp_filename, "w");
-    if (!temp_file) {
+    char temporary_filename[] = ".history.tmp";
+    FILE *temporary_file = fopen(temporary_filename, "w");
+    if (!temporary_file) {
         msg(LOG_ERR, "Failed to create temporary file for deletion");
         return 0;
     }
     
     FILE *history_file = fopen(config.history_file, "r");
     if (!history_file) {
-        fclose(temp_file);
-        unlink(temp_filename);
+        fclose(temporary_file);
+        unlink(temporary_filename);
         return 0;
     }
     
     char line[8192];
     int current_index = 0;
     int deleted = 0;
+    char overflow_hash_to_delete[16] = {0};
+    
+    if (fgets(line, sizeof(line), history_file)) {
+        fputs(line, temporary_file);
+    }
     
     while (fgets(line, sizeof(line), history_file)) {
         if (strlen(line) < 10) {
-            fputs(line, temp_file);
+            fputs(line, temporary_file);
             continue;
         }
         
         if (current_index == index) {
+            char *overflow_marker = strstr(line, "[OVERFLOW:");
+            if (overflow_marker) {
+                if (sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash_to_delete) == 1) {
+                    msg(LOG_DEBUG, "Will delete overflow file for hash: %s", overflow_hash_to_delete);
+                }
+            }
+            
             deleted = 1;
             msg(LOG_NOTICE, "Deleted history entry %d: %.50s", 
                 index + 1, history_entries[index].content);
         } else {
-            fputs(line, temp_file);
+            fputs(line, temporary_file);
         }
         current_index++;
     }
     
     fclose(history_file);
-    fclose(temp_file);
+    fclose(temporary_file);
     
     if (deleted) {
-        if (rename(temp_filename, config.history_file) != 0) {
+        if (strlen(overflow_hash_to_delete) > 0 && config.overflow_directory) {
+            char overflow_file_path[PATH_MAX];
+            snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
+                    config.overflow_directory, overflow_hash_to_delete);
+            
+            if (unlink(overflow_file_path) == 0) {
+                msg(LOG_DEBUG, "Deleted overflow file: %s", overflow_file_path);
+            } else {
+                msg(LOG_WARNING, "Failed to delete overflow file: %s", overflow_file_path);
+            }
+        }
+        
+        if (rename(temporary_filename, config.history_file) != 0) {
             msg(LOG_ERR, "Failed to replace history file after deletion");
-            unlink(temp_filename);
+            unlink(temporary_filename);
             return 0;
         }
         
         load_history_entries();
         
+        // Reset current index if it's now invalid
+        if (current_history_index >= history_count) {
+            current_history_index = -1;
+        }
+        
         return 1;
     } else {
-        unlink(temp_filename);
+        unlink(temporary_filename);
         return 0;
     }
 }

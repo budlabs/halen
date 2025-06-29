@@ -582,18 +582,34 @@ int popup_show(const char *text) {
 }
 
 void popup_hide(void) {
-    if (!showing_popup) return;
+    if (!showing_popup) {
+        msg(LOG_DEBUG, "popup_hide: popup was not showing");
+        return;
+    }
+    
+    msg(LOG_DEBUG, "popup_hide: starting cleanup, window=%lu", popup_window);
     
     if (popup_window) {
         if (xft_draw) {
             XftDrawDestroy(xft_draw);
             xft_draw = NULL;
+            msg(LOG_DEBUG, "popup_hide: destroyed xft_draw");
         }
         if (popup_gc) {
             XFreeGC(display, popup_gc);
             popup_gc = 0;
+            msg(LOG_DEBUG, "popup_hide: freed popup_gc");
         }
+        
+        // Force unmapping before destroying
+        XUnmapWindow(display, popup_window);
+        XSync(display, False);
+        msg(LOG_DEBUG, "popup_hide: unmapped window");
+        
         XDestroyWindow(display, popup_window);
+        XSync(display, False);
+        msg(LOG_DEBUG, "popup_hide: destroyed window");
+        
         popup_window = 0;
     }
     
@@ -601,6 +617,10 @@ void popup_hide(void) {
     initial_resize_done = 0;
     anchor_x = -1;
     anchor_y = -1;
+    
+    // Force a final flush to ensure all X11 commands are processed
+    XFlush(display);
+    msg(LOG_DEBUG, "popup_hide: cleanup completed");
 }
 
 void popup_cleanup(void) {

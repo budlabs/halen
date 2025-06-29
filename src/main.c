@@ -215,10 +215,8 @@ void hotkey_event_callback(const char *event_type) {
         if (history_count > 0) {
             int next_index;
             if (current_index <= 0) {
-                // Wrap around to latest entry
                 next_index = history_count - 1;
             } else {
-                // previous/older
                 next_index = current_index - 1;
             }
             
@@ -245,10 +243,8 @@ void hotkey_event_callback(const char *event_type) {
         if (history_count > 0) {
             int prev_index;
             if (current_index >= history_count - 1) {
-                // Wrap around to oldest entry
                 prev_index = 0;
             } else {
-                // Go to next (newer) entry
                 prev_index = current_index + 1;
             }
             
@@ -276,7 +272,6 @@ void hotkey_event_callback(const char *event_type) {
         if (current_index >= 0) {
             char *selected_entry = clipboard_entry_get_content(current_index);
             if (selected_entry) {
-                // (this will trigger our clipboard listener and move entry to top of history)
                 clipboard_set_content(selected_entry);
                 
                 msg(LOG_NOTICE, "Cut complete: selected entry %d set as clipboard content (NO PASTE)", 
@@ -300,38 +295,33 @@ void hotkey_event_callback(const char *event_type) {
             current_index, nav_direction == NAV_DIRECTION_NEXT ? "NEXT" : "PREV");
         
         if (current_index >= 0) {
-
             if (clipboard_delete_entry(current_index)) {
                 msg(LOG_NOTICE, "Successfully deleted entry %d from history", current_index + 1);
                 
                 int new_history_count = clipboard_get_history_count();
+                msg(LOG_DEBUG, "DELETE: new_history_count=%d", new_history_count);
+                
                 if (new_history_count > 0) {
                     int new_index;
                     
                     if (nav_direction == NAV_DIRECTION_PREV) {
-                        // NEXT = toward older entries (higher indices originally)
-                        // After deletion, the "next older" entry moved down to current position
                         new_index = current_index;
                         if (new_index >= new_history_count) {
-                            // We were at the end, wrap to beginning
                             new_index = 0;
                         }
-                        msg(LOG_DEBUG, "NEXT direction: new_index=%d", new_index);
+                        msg(LOG_DEBUG, "PREV direction: new_index=%d", new_index);
                     } else {
-                        // PREV = toward newer entries (lower indices)
-                        // We want the "next newer" entry, which is at current_index - 1
                         new_index = current_index - 1;
                         if (new_index < 0) {
-                            // We were at the beginning, wrap to end
                             new_index = new_history_count - 1;
                         }
-                        msg(LOG_DEBUG, "PREV direction: new_index=%d", new_index);
+                        msg(LOG_DEBUG, "NEXT direction: new_index=%d", new_index);
                     }
                     
-                    // Update popup with new entry
                     char *new_entry = clipboard_entry_get_truncated(new_index);
                     if (new_entry) {
                         clipboard_set_current_index(new_index);
+                        msg(LOG_DEBUG, "DELETE: popup_is_showing=%d", popup_is_showing());
                         if (popup_is_showing()) {
                             popup_update_text(new_entry);
                             msg(LOG_DEBUG, "Updated popup to entry %d/%d (%s): %.50s", 
@@ -340,11 +330,19 @@ void hotkey_event_callback(const char *event_type) {
                                 new_entry);
                         }
                         free(new_entry);
+                    } else {
+                        msg(LOG_WARNING, "Failed to get entry after deletion, closing popup");
+                        if (popup_is_showing()) {
+                            msg(LOG_DEBUG, "DELETE: force hiding popup due to failed entry retrieval");
+                            popup_hide();
+                        }
+                        clipboard_reset_navigation();
+                        hotkey_reset_nav_direction();
                     }
                 } else {
-                    // No more entries
                     msg(LOG_NOTICE, "No more history entries, closing popup");
                     if (popup_is_showing()) {
+                        msg(LOG_DEBUG, "DELETE: force hiding popup - no more entries");
                         popup_hide();
                     }
                     clipboard_reset_navigation();
@@ -358,24 +356,45 @@ void hotkey_event_callback(const char *event_type) {
         }
         
     } else if (strcmp(event_type, "control_released") == 0) {
-        msg(LOG_DEBUG, "Control key released");
+        
         
         PopupAction action = hotkey_get_popup_action();
-        
+        msg(LOG_DEBUG, "Control key released, action: %d", action);
+
         if (popup_is_showing() 
             && (action == POPUP_ACTION_NEXT || action == POPUP_ACTION_PREV)) {
             int current_index = clipboard_get_current_index();
-            if (current_index >= 0) {
+            if (current_index >= 0 && current_index < clipboard_get_history_count()) {
                 char *selected_entry = clipboard_entry_get_content(current_index);
                 if (selected_entry) {
                     clipboard_set_content(selected_entry);
-                    usleep(50000); // 50ms
+                    usleep(50000);
                     hotkey_perform_paste();
                     free(selected_entry);
+                } else {
+                    msg(LOG_WARNING, "Failed to get selected entry content for paste");
+                }
+            } else {
+                msg(LOG_WARNING, "Invalid current index %d for paste operation", current_index);
+            }
+        } else if (popup_is_showing() && action == POPUP_ACTION_CUT) {
+            int current_index = clipboard_get_current_index();
+            if (current_index >= 0 && current_index < clipboard_get_history_count()) {
+                char *selected_entry = clipboard_entry_get_content(current_index);
+                if (selected_entry) {
+                    clipboard_set_content(selected_entry);
+                    msg(LOG_NOTICE, "Entry %d set to clipboard after deletion (no paste)", current_index + 1);
+                    free(selected_entry);
+                } else {
+                    msg(LOG_WARNING, "Failed to get selected entry content for cut");
                 }
             }
         }
         
+        if (popup_is_showing()) {
+            popup_hide();
+            msg(LOG_DEBUG, "Popup hidden on control release");
+        }
         clipboard_reset_navigation();
     }
 }

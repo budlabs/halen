@@ -126,21 +126,82 @@ static int replace_file_atomically(const char* source_filename, const char* targ
     return 1;
 }
 
-// Extract common file reading pattern for history entries
-static int count_history_entries_in_file(FILE* file) {
-    int entry_count = 0;
+// Consolidate the file reading pattern used in multiple places
+static int process_history_file_lines(int (*line_handler)(const char* line, int index, void* context), void* context) {
+    FILE *history_file = fopen(config.history_file, "r");
+    if (!history_file) return 0;
+    
     char line[8192];
+    fgets(line, sizeof(line), history_file); // Skip metadata
     
-    // Skip metadata line
-    fgets(line, sizeof(line), file);
+    int index = 0;
+    int processed_count = 0;
     
-    while (fgets(line, sizeof(line), file)) {
-        if (strlen(line) > 10) {
-            entry_count++;
-        }
+    while (fgets(line, sizeof(line), history_file)) {
+        if (strlen(line) < 10) continue;
+        
+        int result = line_handler(line, index, context);
+        if (result > 0) processed_count++;
+        index++;
     }
     
-    return entry_count;
+    fclose(history_file);
+    return processed_count;
+}
+
+// Replace load_full_content_from_overflow with simpler version
+static char* load_overflow_content_by_hash(const char* overflow_hash) {
+    if (!config.overflow_directory || !overflow_hash) return NULL;
+    
+    char overflow_file_path[PATH_MAX];
+    snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
+            config.overflow_directory, overflow_hash);
+    
+    FILE *overflow_file = fopen(overflow_file_path, "r");
+    if (!overflow_file) return NULL;
+    
+    char *full_content = malloc(MAX_CLIPBOARD_SIZE);
+    if (full_content) {
+        size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
+        full_content[content_size] = '\0';
+    }
+    fclose(overflow_file);
+    
+    return full_content;
+}
+
+// Remove the nested function definition and replace with proper structure
+static int find_overflow_hash_handler(const char* line, int current_index, void* context) {
+    typedef struct { int target_index; char* result_hash; } find_context_t;
+    find_context_t *ctx = (find_context_t*)context;
+    if (current_index == ctx->target_index) {
+        ctx->result_hash = extract_overflow_hash_from_line(line);
+        return 1;
+    }
+    return 0;
+}
+
+static char* load_full_content_from_overflow(int index) {
+    typedef struct { int target_index; char* result_hash; } find_context_t;
+    
+    find_context_t context = {index, NULL};
+    process_history_file_lines(find_overflow_hash_handler, &context);
+    
+    if (!context.result_hash) return NULL;
+    
+    char* content = load_overflow_content_by_hash(context.result_hash);
+    free(context.result_hash);
+    return content;
+}
+
+static int count_history_entries_in_file(FILE* file) {
+    int count = 0;
+    char line[8192];
+    fgets(line, sizeof(line), file); // Skip metadata
+    while (fgets(line, sizeof(line), file)) {
+        if (strlen(line) > 10) count++;
+    }
+    return count;
 }
 
 static uint32_t calculate_fast_hash(const char *content) {
@@ -1208,58 +1269,4 @@ int clipboard_set_content(const char* content) {
 // Add this public function near the end of the file, before clipboard_set_content
 int clipboard_delete_entry(int index) {
     return delete_history_entry(index);
-}
-
-static char* load_full_content_from_overflow(int index) {
-    if (!config.overflow_directory || index < 0) {
-        return NULL;
-    }
-    
-    FILE *history_file = fopen(config.history_file, "r");
-    if (!history_file) return NULL;
-    
-    char line[8192];
-    int current_index = 0;
-    
-    // Skip metadata line
-    fgets(line, sizeof(line), history_file);
-    
-    while (fgets(line, sizeof(line), history_file)) {
-        if (strlen(line) < 10) continue;
-        
-        if (current_index == index) {
-            char *overflow_marker = strstr(line, "[OVERFLOW:");
-            if (overflow_marker) {
-                char overflow_hash[16];
-                if (sscanf(overflow_marker, "[OVERFLOW:%15[^]]]", overflow_hash) == 1) {
-                    fclose(history_file);
-                    
-                    char overflow_file_path[PATH_MAX];
-                    snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
-                            config.overflow_directory, overflow_hash);
-                    
-                    FILE *overflow_file = fopen(overflow_file_path, "r");
-                    if (overflow_file) {
-                        char *full_content = malloc(MAX_CLIPBOARD_SIZE);
-                        if (full_content) {
-                            size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
-                            full_content[content_size] = '\0';
-                            fclose(overflow_file);
-                            
-                            msg(LOG_DEBUG, "Loaded full content from overflow file: %s", overflow_file_path);
-                            return full_content;
-                        }
-                        fclose(overflow_file);
-                    } else {
-                        msg(LOG_WARNING, "Could not open overflow file: %s", overflow_file_path);
-                    }
-                }
-            }
-            break;
-        }
-        current_index++;
-    }
-    
-    fclose(history_file);
-    return NULL;
 }

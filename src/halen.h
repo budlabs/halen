@@ -1,10 +1,9 @@
 #ifndef CLIPOPUP_H
 #define CLIPOPUP_H
 
+#include "config.h"
 #include <sys/syslog.h>
 #include <X11/Xlib.h>
-
-#define DEFAULT_CONFIG_FILE "clipopup.conf"
 
 typedef enum {
     POPUP_ACTION_NONE = 0,

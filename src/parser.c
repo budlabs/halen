@@ -1,10 +1,12 @@
 #define _GNU_SOURCE
 #include "parser.h"
-#include "halen.h"  // This will provide msg() and verbose declarations
+#include "halen.h"
+#include "xdg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "clipboard.h"
+#include <linux/limits.h>
 
 // Initialize config with defaults
 void config_init(config_t *config) {

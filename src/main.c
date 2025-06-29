@@ -22,6 +22,7 @@
 #include "hotkey.h"
 #include "clipboard.h"
 #include "parser.h"
+#include "xdg.h"
 
 Display *g_display = NULL;
 Window g_root_window;
@@ -51,27 +52,8 @@ static void setup_signal_handling(void) {
     fcntl(signal_pipe_write_fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-static char* get_xdg_runtime_directory(void) {
-    char *xdg_runtime = getenv("XDG_RUNTIME_DIR");
-    if (xdg_runtime && strlen(xdg_runtime) > 0) {
-        return strdup(xdg_runtime);
-    }
-    
-    // Fallback to /tmp/user-uid if XDG_RUNTIME_DIR is not set
-    char fallback_path[256];
-    snprintf(fallback_path, sizeof(fallback_path), "/tmp/halen-%d", getuid());
-    
-    // Create directory if it doesn't exist
-    if (mkdir(fallback_path, 0700) == -1 && errno != EEXIST) {
-        msg(LOG_WARNING, "Failed to create runtime directory %s: %s", fallback_path, strerror(errno));
-        return strdup("/tmp");
-    }
-    
-    return strdup(fallback_path);
-}
-
 static char* construct_pid_file_path(void) {
-    char *runtime_dir = get_xdg_runtime_directory();
+    char *runtime_dir = xdg_get_directory(XDG_RUNTIME_DIR);
     if (!runtime_dir) {
         return NULL;
     }
@@ -399,13 +381,14 @@ void hotkey_event_callback(const char *event_type) {
 }
 
 static void print_help(const char *program_name) {
+    config_file = config_file ? config_file : xdg_get_user_config_path(PROGRAM_NAME);
     printf("Usage: %s [OPTIONS]\n", program_name);
     printf("\n");
     printf("Smart Ctrl+V clipboard manager with popup interface\n");
     printf("\n");
     printf("Options:\n");
     printf("  -V, --verbose         Enable verbose (debug) logging\n");
-    printf("  -c, --config FILE     Use configuration file (default: %s)\n", DEFAULT_CONFIG_FILE);
+    printf("  -c, --config FILE     Use configuration file (default: %s)\n", config_file);
     printf("  -t, --toggle          Toggle monitoring in running instance\n");
     printf("  -h, --help            Show this help message\n");
     printf("      --version         Show version information\n");
@@ -416,7 +399,7 @@ static void print_help(const char *program_name) {
     printf("  - Automatic clipboard monitoring and history saving\n");
     printf("\n");
     printf("History file: %s\n", config.history_file);
-    printf("Config file: %s\n", config_file ? config_file : DEFAULT_CONFIG_FILE);
+    printf("Config file: %s\n", config_file);
     printf("\n");
 }
 
@@ -556,7 +539,13 @@ int main(int argc, char *argv[]) {
     }
     
     if (!config_file) {
-        config_file = strdup(DEFAULT_CONFIG_FILE);
+        config_file = xdg_get_user_config_path(PROGRAM_NAME);
+        if (!config_file) {
+            msg(LOG_ERR, "Failed to determine config file path: %s", strerror(errno));
+            remove_pid_file();
+            config_free(&config);
+            return EXIT_FAILURE;
+        }
     }
     
     if (!config_parse_file(&config, config_file)) {

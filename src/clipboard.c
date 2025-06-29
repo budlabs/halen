@@ -3,6 +3,7 @@
 
 #include "clipboard.h"
 #include "halen.h"
+#include "xdg.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -453,25 +454,20 @@ static void* clipboard_monitor_thread(void* arg) {
 
 char* clipboard_history_file_default_path(void) {
     static char history_path[PATH_MAX];
-    const char *xdg_cache_home = getenv("XDG_CACHE_HOME");
-    const char *home = getenv("HOME");
-    char cache_dir[PATH_MAX];
-    
-    // Determine cache directory according to XDG spec
-    if (xdg_cache_home && strlen(xdg_cache_home) > 0) {
-        snprintf(cache_dir, sizeof(cache_dir), "%s", xdg_cache_home);
-    } else if (home && strlen(home) > 0) {
-        snprintf(cache_dir, sizeof(cache_dir), "%s/.cache", home);
-    } else {
-        snprintf(cache_dir, sizeof(cache_dir), "/tmp");
-    }
-    
-    // Create full path: cache_dir/clipopup/history
-    int written = snprintf(history_path, sizeof(history_path), "%s/clipopup/history", cache_dir);
-    if (written < 0 || (size_t)written >= sizeof(history_path)) {
-        msg(LOG_ERR, "Path too long for history file: %s/clipopup/history", cache_dir);
+    char *cache_dir = xdg_get_directory(XDG_CACHE_HOME);
+    if (!cache_dir) {
+        msg(LOG_ERR, "Failed to determine cache directory");
         return NULL;
     }
+    
+    int written = snprintf(history_path, sizeof(history_path), "%s/halen/history", cache_dir);
+    free(cache_dir);
+    
+    if (written < 0 || (size_t)written >= sizeof(history_path)) {
+        msg(LOG_ERR, "Path too long for history file");
+        return NULL;
+    }
+    
     return history_path;
 }
 

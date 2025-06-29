@@ -5,7 +5,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include "clipboard.h"
+#include "history.h"
 #include <linux/limits.h>
 #include <sys/stat.h>
 #include "halen.h"
@@ -14,7 +14,7 @@
 void config_init(config_t *config) {
     config->verbose = 0;
     config->logfile = NULL;
-    char *default_path = clipboard_history_file_default_path();
+    char *default_path = history_get_default_file_path();
     config->history_file = strdup(default_path);
     config->timeout = 2;
     config->max_lines = 10;

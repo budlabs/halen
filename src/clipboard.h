@@ -4,6 +4,8 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 
+#define MAX_CLIPBOARD_SIZE (10 * 1024 * 1024)
+
 // Initialize clipboard monitoring system
 int clipboard_init(void);
 
@@ -12,6 +14,7 @@ int clipboard_start_monitoring_async(void);
 
 // Stop clipboard monitoring thread
 void clipboard_stop_monitoring(void);
+char* clipboard_get_content(const char* selection_name);
 
 // Get clipboard history entry by index (0 = oldest, -1 = latest)
 char* clipboard_entry_get_truncated(int n);

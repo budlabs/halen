@@ -22,6 +22,7 @@
 #include "hotkey.h"
 #include "clipboard.h"
 #include "parser.h"
+#include "history.h"
 #include "xdg.h"
 
 Display *g_display = NULL;
@@ -128,6 +129,7 @@ static void cleanup_resources(void) {
     
     clipboard_stop_monitoring();
     hotkey_cleanup();
+    history_cleanup();
     
     if (signal_pipe_read_fd != -1) {
         close(signal_pipe_read_fd);
@@ -598,6 +600,13 @@ int main(int argc, char *argv[]) {
     Screen *screen = DefaultScreenOfDisplay(g_display);
     int screen_width = WidthOfScreen(screen);
     int screen_height = HeightOfScreen(screen);
+    
+    if (!history_initialize()) {
+        msg(LOG_ERR, "Failed to initialize history system");
+        remove_pid_file();
+        config_free(&config);
+        return EXIT_FAILURE;
+    }
     
     popup_init(g_display, g_root_window, screen_width, screen_height);
     hotkey_init(hotkey_event_callback);

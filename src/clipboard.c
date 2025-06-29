@@ -63,6 +63,68 @@ static uint32_t calculate_fast_hash(const char *content) {
     return hash_value;
 }
 
+static char* create_display_formatted_content(const char *content) {
+    if (!content) return NULL;
+    
+    size_t buffer_size = (config.max_lines * (config.max_line_length + 1)) + 100;
+    char *result = malloc(buffer_size);
+    if (!result) return strdup(content);
+    
+    char *write_position = result;
+    const char *line_start = content;
+    int displayed_lines = 0;
+    int total_lines = 0;
+    
+    for (const char *p = content; *p; p++) {
+        if (*p == '\n') total_lines++;
+    }
+    if (*content && content[strlen(content) - 1] != '\n') {
+        total_lines++;
+    }
+    
+    while (*line_start && displayed_lines < config.max_lines) {
+        const char *line_end = strchr(line_start, '\n');
+        int line_length;
+        
+        if (line_end) {
+            line_length = line_end - line_start;
+        } else {
+            line_length = strlen(line_start);
+        }
+        
+        if (displayed_lines > 0) {
+            *write_position++ = '\n';
+        }
+        
+        if (line_length > config.max_line_length) {
+            strncpy(write_position, line_start, config.max_line_length - 3);
+            write_position += config.max_line_length - 3;
+            strcpy(write_position, "...");
+            write_position += 3;
+        } else {
+            strncpy(write_position, line_start, line_length);
+            write_position += line_length;
+        }
+        
+        displayed_lines++;
+        
+        if (line_end) {
+            line_start = line_end + 1;
+        } else {
+            break;
+        }
+    }
+    
+    int remaining_lines = total_lines - displayed_lines;
+    if (remaining_lines > 0) {
+        sprintf(write_position, "\n(+%d lines)", remaining_lines);
+    } else {
+        *write_position = '\0';
+    }
+    
+    return result;
+}
+
 static char* truncate_content_for_storage(const char *content, char **overflow_hash) {
     int content_length = strlen(content);
     int line_count = 0;
@@ -123,15 +185,10 @@ static char* truncate_content_for_storage(const char *content, char **overflow_h
     }
     
     // Create truncated version with "..." marker
-    char *truncated_content = malloc(truncate_position + 4);
+    char *truncated_content = create_display_formatted_content(content);
     if (!truncated_content) {
-        free(*overflow_hash);
-        *overflow_hash = NULL;
-        return strdup(content);
+        truncated_content = strdup(content);
     }
-    
-    strncpy(truncated_content, content, truncate_position);
-    strcpy(truncated_content + truncate_position, "...");
     
     return truncated_content;
 }
@@ -187,9 +244,10 @@ static history_entry_t entry_parse(char *line) {
     entry.source[source_len] = '\0';
     
     // Extract and unescape content
-    int content_len = strlen(content_start);
+    char *display_content = extract_display_content(content_start);
+    int content_len = strlen(display_content);
     entry.content = malloc(content_len + 1);
-    char *src = content_start;
+    char *src = display_content;
     char *dst = entry.content;
     while (*src) {
         if (*src == '\\' && *(src + 1)) {
@@ -204,6 +262,8 @@ static history_entry_t entry_parse(char *line) {
         }
     }
     *dst = '\0';
+    
+    free(display_content);
 
     return entry;
 }

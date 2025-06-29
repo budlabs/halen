@@ -48,7 +48,8 @@ typedef struct {
     int position_x;
     int position_y;
     PopupAnchor anchor;
-    int margin;
+    int margin_vertical;
+    int margin_horizontal;
 } config_t;
 
 // Global verbose flag (defined in main.c)

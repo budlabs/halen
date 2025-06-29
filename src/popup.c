@@ -34,7 +34,8 @@ static int initial_resize_done = 0;
 
 void popup_redraw(void);
 static int calculate_text_dimensions(const char *text, int *width, int *height);
-static void get_mouse_position(int *mouse_x, int *mouse_y);
+static void get_mouse_position(int *mouse_x_coordinate, int *mouse_y_coordinate);
+static void calculate_position_from_anchor(int reference_x, int reference_y, int window_width, int window_height, int *final_x, int *final_y);
 static void resize_window(void);
 void popup_redraw(void);
 
@@ -136,64 +137,251 @@ void popup_redraw(void) {
     XFlush(display);
 }
 
-static void get_mouse_position(int *mouse_x, int *mouse_y) {
+static void get_mouse_position(int *mouse_x_coordinate, int *mouse_y_coordinate) {
     Window root_return, child_return;
     int root_x, root_y, window_x, window_y;
     unsigned int mask_return;
     
     if (XQueryPointer(display, root_window, &root_return, &child_return,
                       &root_x, &root_y, &window_x, &window_y, &mask_return)) {
-        *mouse_x = root_x;
-        *mouse_y = root_y;
+        *mouse_x_coordinate = root_x;
+        *mouse_y_coordinate = root_y;
     } else {
-        *mouse_x = screen_width / 2;
-        *mouse_y = screen_height / 2;
+        *mouse_x_coordinate = screen_width / 2;
+        *mouse_y_coordinate = screen_height / 2;
+    }
+}
+
+static void calculate_position_from_anchor(int reference_x, int reference_y, int window_width, int window_height, int *final_x, int *final_y) {
+    switch (config.anchor) {
+        case ANCHOR_TOP_LEFT:
+            *final_x = reference_x;
+            *final_y = reference_y;
+            break;
+        case ANCHOR_TOP_CENTER:
+            *final_x = reference_x - window_width / 2;
+            *final_y = reference_y;
+            break;
+        case ANCHOR_TOP_RIGHT:
+            *final_x = reference_x - window_width;
+            *final_y = reference_y;
+            break;
+        case ANCHOR_CENTER_LEFT:
+            *final_x = reference_x;
+            *final_y = reference_y - window_height / 2;
+            break;
+        case ANCHOR_CENTER_CENTER:
+            *final_x = reference_x - window_width / 2;
+            *final_y = reference_y - window_height / 2;
+            break;
+        case ANCHOR_CENTER_RIGHT:
+            *final_x = reference_x - window_width;
+            *final_y = reference_y - window_height / 2;
+            break;
+        case ANCHOR_BOTTOM_LEFT:
+            *final_x = reference_x;
+            *final_y = reference_y - window_height;
+            break;
+        case ANCHOR_BOTTOM_CENTER:
+            *final_x = reference_x - window_width / 2;
+            *final_y = reference_y - window_height;
+            break;
+        case ANCHOR_BOTTOM_RIGHT:
+            *final_x = reference_x - window_width;
+            *final_y = reference_y - window_height;
+            break;
+        default:
+            *final_x = reference_x - window_width / 2;
+            *final_y = reference_y - window_height / 2;
+            break;
+    }
+    
+    // Only apply bounds checking for mouse and absolute positioning
+    // Screen positioning uses screen edges as reference points
+    if (*final_x < config.margin_horizontal) *final_x = config.margin_horizontal;
+    if (*final_y < config.margin_vertical) *final_y = config.margin_vertical;
+    if (*final_x + window_width > screen_width - config.margin_horizontal) {
+        *final_x = screen_width - window_width - config.margin_horizontal;
+    }
+    if (*final_y + window_height > screen_height - config.margin_vertical) {
+        *final_y = screen_height - window_height - config.margin_vertical;
     }
 }
 
 static void resize_window(void) {
     if (!showing_popup || !popup_window || !xft_font) return;
     
-    int new_width = 600;
-    int new_height = 200;
+    int calculated_width = 600;
+    int calculated_height = 200;
     
-    calculate_text_dimensions(popup_text, &new_width, &new_height);
+    calculate_text_dimensions(popup_text, &calculated_width, &calculated_height);
     
-    if (new_width < 400) new_width = 400;
-    if (new_width > screen_width - 100) new_width = screen_width - 100;
-    if (new_height < 100) new_height = 100;
-    if (new_height > screen_height - 100) new_height = screen_height - 100;
-    
-    int new_x, new_y;
-    
-    if (!initial_resize_done) {
-        // First resize: center the window and store anchor point
-        int mouse_x, mouse_y;
-        get_mouse_position(&mouse_x, &mouse_y);
-        new_x = mouse_x - new_width / 2;
-        new_y = mouse_y - new_height / 2;
-        // Ensure window stays on screen
-        if (new_x < 0) new_x = 0;
-        if (new_y < 0) new_y = 0;
-        if (new_x + new_width > screen_width) new_x = screen_width - new_width;
-        if (new_y + new_height > screen_height) new_y = screen_height - new_height;
-
-        anchor_x = new_x;
-        anchor_y = new_y + new_height;
-        initial_resize_done = 1;
-    } else {
-        // Subsequent resizes: use bottom-left anchor
-        new_x = anchor_x;
-        new_y = anchor_y - new_height;
-        
-        // Ensure window stays on screen
-        if (new_x < 0) new_x = 0;
-        if (new_y < 0) new_y = 0;
-        if (new_x + new_width > screen_width) new_x = screen_width - new_width;
-        if (new_y + new_height > screen_height) new_y = screen_height - new_height;
+    if (calculated_width < 400) calculated_width = 400;
+    if (calculated_width > screen_width - (config.margin_horizontal * 2)) {
+        calculated_width = screen_width - (config.margin_horizontal * 2);
+    }
+    if (calculated_height < 100) calculated_height = 100;
+    if (calculated_height > screen_height - (config.margin_vertical * 2)) {
+        calculated_height = screen_height - (config.margin_vertical * 2);
     }
     
-    XMoveResizeWindow(display, popup_window, new_x, new_y, new_width, new_height);
+    int window_x_coordinate, window_y_coordinate;
+    int reference_x, reference_y;
+    
+    if (!initial_resize_done) {
+        switch (config.position) {
+            case POPUP_POSITION_MOUSE: {
+                int mouse_x_coordinate, mouse_y_coordinate;
+                get_mouse_position(&mouse_x_coordinate, &mouse_y_coordinate);
+                reference_x = mouse_x_coordinate;
+                reference_y = mouse_y_coordinate;
+                break;
+            }
+            case POPUP_POSITION_SCREEN:
+                switch (config.anchor) {
+                    case ANCHOR_TOP_LEFT:
+                    case ANCHOR_CENTER_LEFT:
+                    case ANCHOR_BOTTOM_LEFT:
+                        reference_x = 0;
+                        break;
+                    case ANCHOR_TOP_CENTER:
+                    case ANCHOR_CENTER_CENTER:
+                    case ANCHOR_BOTTOM_CENTER:
+                        reference_x = screen_width / 2;
+                        break;
+                    case ANCHOR_TOP_RIGHT:
+                    case ANCHOR_CENTER_RIGHT:
+                    case ANCHOR_BOTTOM_RIGHT:
+                        reference_x = screen_width;
+                        break;
+                }
+                
+                switch (config.anchor) {
+                    case ANCHOR_TOP_LEFT:
+                    case ANCHOR_TOP_CENTER:
+                    case ANCHOR_TOP_RIGHT:
+                        reference_y = 0;
+                        break;
+                    case ANCHOR_CENTER_LEFT:
+                    case ANCHOR_CENTER_CENTER:
+                    case ANCHOR_CENTER_RIGHT:
+                        reference_y = screen_height / 2;
+                        break;
+                    case ANCHOR_BOTTOM_LEFT:
+                    case ANCHOR_BOTTOM_CENTER:
+                    case ANCHOR_BOTTOM_RIGHT:
+                        reference_y = screen_height;
+                        break;
+                }
+                break;
+            case POPUP_POSITION_ABSOLUTE:
+                reference_x = config.position_x;
+                reference_y = config.position_y;
+                break;
+            default:
+                reference_x = screen_width / 2;
+                reference_y = screen_height / 2;
+                break;
+        }
+        
+        calculate_position_from_anchor(reference_x, reference_y, calculated_width, calculated_height, 
+                                     &window_x_coordinate, &window_y_coordinate);
+
+        // Store anchor point based on which corner/edge should remain fixed
+        switch (config.anchor) {
+            case ANCHOR_TOP_LEFT:
+                anchor_x = window_x_coordinate;
+                anchor_y = window_y_coordinate;
+                break;
+            case ANCHOR_TOP_CENTER:
+                anchor_x = window_x_coordinate + calculated_width / 2;
+                anchor_y = window_y_coordinate;
+                break;
+            case ANCHOR_TOP_RIGHT:
+                anchor_x = window_x_coordinate + calculated_width;
+                anchor_y = window_y_coordinate;
+                break;
+            case ANCHOR_CENTER_LEFT:
+                anchor_x = window_x_coordinate;
+                anchor_y = window_y_coordinate + calculated_height / 2;
+                break;
+            case ANCHOR_CENTER_CENTER:
+                anchor_x = window_x_coordinate + calculated_width / 2;
+                anchor_y = window_y_coordinate + calculated_height / 2;
+                break;
+            case ANCHOR_CENTER_RIGHT:
+                anchor_x = window_x_coordinate + calculated_width;
+                anchor_y = window_y_coordinate + calculated_height / 2;
+                break;
+            case ANCHOR_BOTTOM_LEFT:
+                anchor_x = window_x_coordinate;
+                anchor_y = window_y_coordinate + calculated_height;
+                break;
+            case ANCHOR_BOTTOM_CENTER:
+                anchor_x = window_x_coordinate + calculated_width / 2;
+                anchor_y = window_y_coordinate + calculated_height;
+                break;
+            case ANCHOR_BOTTOM_RIGHT:
+                anchor_x = window_x_coordinate + calculated_width;
+                anchor_y = window_y_coordinate + calculated_height;
+                break;
+        }
+        initial_resize_done = 1;
+    } else {
+        // Calculate new position keeping anchor point fixed
+        switch (config.anchor) {
+            case ANCHOR_TOP_LEFT:
+                window_x_coordinate = anchor_x;
+                window_y_coordinate = anchor_y;
+                break;
+            case ANCHOR_TOP_CENTER:
+                window_x_coordinate = anchor_x - calculated_width / 2;
+                window_y_coordinate = anchor_y;
+                break;
+            case ANCHOR_TOP_RIGHT:
+                window_x_coordinate = anchor_x - calculated_width;
+                window_y_coordinate = anchor_y;
+                break;
+            case ANCHOR_CENTER_LEFT:
+                window_x_coordinate = anchor_x;
+                window_y_coordinate = anchor_y - calculated_height / 2;
+                break;
+            case ANCHOR_CENTER_CENTER:
+                window_x_coordinate = anchor_x - calculated_width / 2;
+                window_y_coordinate = anchor_y - calculated_height / 2;
+                break;
+            case ANCHOR_CENTER_RIGHT:
+                window_x_coordinate = anchor_x - calculated_width;
+                window_y_coordinate = anchor_y - calculated_height / 2;
+                break;
+            case ANCHOR_BOTTOM_LEFT:
+                window_x_coordinate = anchor_x;
+                window_y_coordinate = anchor_y - calculated_height;
+                break;
+            case ANCHOR_BOTTOM_CENTER:
+                window_x_coordinate = anchor_x - calculated_width / 2;
+                window_y_coordinate = anchor_y - calculated_height;
+                break;
+            case ANCHOR_BOTTOM_RIGHT:
+                window_x_coordinate = anchor_x - calculated_width;
+                window_y_coordinate = anchor_y - calculated_height;
+                break;
+        }
+        
+        if (config.position != POPUP_POSITION_SCREEN) {
+            if (window_x_coordinate < config.margin_horizontal) window_x_coordinate = config.margin_horizontal;
+            if (window_y_coordinate < config.margin_vertical) window_y_coordinate = config.margin_vertical;
+            if (window_x_coordinate + calculated_width > screen_width) {
+                window_x_coordinate = screen_width - calculated_width - config.margin_horizontal;
+            }
+            if (window_y_coordinate + calculated_height > screen_height) {
+                window_y_coordinate = screen_height - calculated_height - config.margin_vertical;
+            }
+        }
+    }
+    
+    XMoveResizeWindow(display, popup_window, window_x_coordinate, window_y_coordinate, 
+                      calculated_width, calculated_height);
 }
 
 static int calculate_text_dimensions(const char *text, int *width, int *height) {

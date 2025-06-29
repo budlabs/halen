@@ -26,7 +26,8 @@ void config_init(config_t *config) {
     config->position_x = 0;
     config->position_y = 0;
     config->anchor = ANCHOR_CENTER_CENTER;
-    config->margin = 10;
+    config->margin_vertical = 10;
+    config->margin_horizontal = 10;
 }
 
 // Parse configuration file
@@ -253,15 +254,39 @@ int config_parse_file(config_t *config, const char *filename) {
             }
             
         } else if (strcmp(key, "margin") == 0) {
-            char *endptr;
-            long margin_value = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && margin_value >= 0 && margin_value <= 100) {
-                config->margin = (int)margin_value;
-                msg(LOG_DEBUG, "Config: margin = %d", config->margin);
+            char *space = strchr(value, ' ');
+            if (space) {
+                *space = '\0';
+                char *vertical_str = value;
+                char *horizontal_str = space + 1;
+                
+                while (*horizontal_str == ' ' || *horizontal_str == '\t') horizontal_str++;
+                
+                char *vertical_endptr, *horizontal_endptr;
+                long vertical_value = strtol(vertical_str, &vertical_endptr, 10);
+                long horizontal_value = strtol(horizontal_str, &horizontal_endptr, 10);
+                
+                if (*vertical_endptr == '\0' && *horizontal_endptr == '\0' && 
+                    vertical_value >= 0 && vertical_value <= 100 &&
+                    horizontal_value >= 0 && horizontal_value <= 100) {
+                    config->margin_vertical = (int)vertical_value;
+                    config->margin_horizontal = (int)horizontal_value;
+                    msg(LOG_DEBUG, "Config: margin = %d %d", config->margin_vertical, config->margin_horizontal);
+                } else {
+                    msg(LOG_WARNING, "Invalid margin values '%s' on line %d (must be two values 0-100)", value, line_num);
+                }
             } else {
-                msg(LOG_WARNING, "Invalid margin value '%s' on line %d (must be 0-100)", value, line_num);
+                char *endptr;
+                long margin_value = strtol(value, &endptr, 10);
+                if (*endptr == '\0' && margin_value >= 0 && margin_value <= 100) {
+                    config->margin_vertical = (int)margin_value;
+                    config->margin_horizontal = (int)margin_value;
+                    msg(LOG_DEBUG, "Config: margin = %d", config->margin_vertical);
+                } else {
+                    msg(LOG_WARNING, "Invalid margin value '%s' on line %d (must be 0-100)", value, line_num);
+                }
             }
-            
+
         } else {
             msg(LOG_WARNING, "Unknown config option '%s' on line %d", key, line_num);
         }
@@ -327,5 +352,9 @@ void config_print(const config_t *config) {
     }
     
     msg(LOG_NOTICE, "  anchor: %d", config->anchor);
-    msg(LOG_NOTICE, "  margin: %d pixels", config->margin);
+    if (config->margin_vertical == config->margin_horizontal) {
+        msg(LOG_NOTICE, "  margin: %d pixels", config->margin_vertical);
+    } else {
+        msg(LOG_NOTICE, "  margin: %d %d pixels", config->margin_vertical, config->margin_horizontal);
+    }
 }

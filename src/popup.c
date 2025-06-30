@@ -56,8 +56,17 @@ void popup_redraw(void) {
 
     char index_count_text[32];
     int history_count = clipboard_get_history_count();
+    int current_index = clipboard_get_current_index();
+    
+    int display_index;
+    if (current_index == -1) {
+        display_index = 1;  // Show as entry 1 when no selection
+    } else {
+        display_index = current_index + 1;  // Convert 0-based to 1-based display
+    }
+    
     snprintf(index_count_text, sizeof(index_count_text), "%d/%d", 
-              history_count - clipboard_get_current_index(), history_count);
+              display_index, history_count);
     
     XftFont *small_font = xft_font_small ? xft_font_small : xft_font;
     XGlyphInfo index_extents;

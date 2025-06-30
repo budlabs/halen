@@ -776,14 +776,17 @@ char* history_get_entry_truncated(int index) {
     }
     
     if (index < 0) {
-        index = history_count - 1;
+        index = 0;  // Default to newest entry
     }
     
     if (index < 0 || index >= history_count) {
         return NULL;
     }
     
-    return strdup(entries[index].content);
+    // Reverse the index to get newest-first ordering
+    int actual_index = history_count - 1 - index;
+    
+    return strdup(entries[actual_index].content);
 }
 
 char* history_get_entry_full_content(int index) {
@@ -792,16 +795,19 @@ char* history_get_entry_full_content(int index) {
     }
     
     if (index < 0) {
-        index = history_count - 1;
+        index = 0;  // Default to newest entry
     }
     
     if (index < 0 || index >= history_count) {
         return NULL;
     }
     
-    // First try to get overflow content
+    // Reverse the index to get newest-first ordering
+    int actual_index = history_count - 1 - index;
+    
+    // First try to get overflow content using the actual file line index
     typedef struct { int target_index; char* result_hash; } find_context_t;
-    find_context_t context = {index, NULL};
+    find_context_t context = {actual_index, NULL};
     process_history_file_lines(find_overflow_hash_handler, &context);
     
     if (context.result_hash) {
@@ -813,7 +819,7 @@ char* history_get_entry_full_content(int index) {
     }
     
     // Fallback to truncated content
-    return strdup(entries[index].content);
+    return strdup(entries[actual_index].content);
 }
 
 int history_delete_entry(int index) {
@@ -821,6 +827,9 @@ int history_delete_entry(int index) {
     if (history_count < 1 || index < 0 || index >= history_count) {
         return 0;
     }
+    
+    // Reverse the index to get the actual file line index
+    int actual_index = history_count - 1 - index;
     
     char temp_filename[] = ".history.tmp";
     FILE *temp_file = fopen(temp_filename, "w");
@@ -851,7 +860,7 @@ int history_delete_entry(int index) {
             continue;
         }
         
-        if (current_line_index == index) {
+        if (current_line_index == actual_index) {
             overflow_hash_to_delete = extract_overflow_hash_from_line(line);
             if (overflow_hash_to_delete) {
                 msg(LOG_DEBUG, "Will delete overflow file for hash: %s", overflow_hash_to_delete);
@@ -859,7 +868,7 @@ int history_delete_entry(int index) {
             
             deleted = 1;
             msg(LOG_NOTICE, "Deleted history entry %d: %.50s", 
-                index + 1, entries[index].content);
+                index + 1, entries[actual_index].content);
         } else {
             fputs(line, temp_file);
         }
@@ -910,7 +919,17 @@ int history_get_count(void) {
 
 
 void history_set_current_index(int index) {
-    current_index = index;
+    if (index >= 0 && index < history_count) {
+        current_index = index;
+        msg(LOG_DEBUG, "Set current history index to %d (entry %d/%d)", 
+            index, index + 1, history_count);
+    } else if (index == -1) {
+        current_index = -1;
+        msg(LOG_DEBUG, "Reset current history index to -1");
+    } else {
+        msg(LOG_WARNING, "Attempted to set invalid history index %d (count: %d)", 
+            index, history_count);
+    }
 }
 
 int history_get_current_index(void) {

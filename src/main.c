@@ -198,11 +198,10 @@ void hotkey_event_callback(const char *event_type) {
         
         char *latest_entry = clipboard_entry_get_truncated(-1);
         if (latest_entry) {
-            clipboard_set_current_index(-1);
+            clipboard_set_current_index(0);  // Start at newest entry (index 0)
             if (!popup_show(latest_entry)) {
                 msg(LOG_WARNING, "Failed to show popup");
             }
-
             free(latest_entry);
         } else {
             msg(LOG_WARNING, "Failed to show popup, no entries, or no history");
@@ -216,10 +215,13 @@ void hotkey_event_callback(const char *event_type) {
         
         if (history_count > 0) {
             int next_index;
-            if (current_index <= 0) {
-                next_index = history_count - 1;
+            if (current_index == -1) {
+                next_index = 1;  // From newest (0) to second newest (1)
             } else {
-                next_index = current_index - 1;
+                next_index = current_index + 1;  // Go to older entry
+                if (next_index >= history_count) {
+                    next_index = 0;  // Wrap to newest
+                }
             }
             
             char *next_entry = clipboard_entry_get_truncated(next_index);
@@ -244,10 +246,13 @@ void hotkey_event_callback(const char *event_type) {
         
         if (history_count > 0) {
             int prev_index;
-            if (current_index >= history_count - 1) {
-                prev_index = 0;
+            if (current_index == -1) {
+                prev_index = history_count - 1;  // Go to oldest entry
             } else {
-                prev_index = current_index + 1;
+                prev_index = current_index - 1;  // Go to newer entry
+                if (prev_index < 0) {
+                    prev_index = history_count - 1;  // Wrap to oldest
+                }
             }
             
             char *prev_entry = clipboard_entry_get_truncated(prev_index);
@@ -306,7 +311,7 @@ void hotkey_event_callback(const char *event_type) {
                 if (new_history_count > 0) {
                     int new_index;
                     
-                    if (nav_direction == NAV_DIRECTION_PREV) {
+                    if (nav_direction == NAV_DIRECTION_NEXT) {
                         new_index = current_index;
                         if (new_index >= new_history_count) {
                             new_index = 0;

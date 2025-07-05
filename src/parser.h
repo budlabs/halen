@@ -4,6 +4,7 @@
 #include "halen.h"
 
 void config_init(config_t *config);
+int config_load_colors(config_t *config, Display *display);
 int config_parse_file(config_t *config, const char *filename);
 int config_apply(config_t *config);
 void config_print(const config_t *config);

@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include "halen.h"
 
+static int parse_color(const char *color_string, XftColor *xft_color, Display *display);
+
 // Initialize config with defaults
 void config_init(config_t *config) {
     config->verbose = 0;
@@ -21,9 +23,9 @@ void config_init(config_t *config) {
     config->max_line_length = 80;
     config->font = strdup("monospace");
     config->font_size = 12;
-    config->background = 0xFFFFFF;
-    config->foreground = 0x000000;
-    config->count_color = 0xFF0000;
+    config->background_color_string = strdup("#ffffff");
+    config->foreground_color_string = strdup("#000000");
+    config->count_color_string = strdup("#666666");
     config->position = POPUP_POSITION_MOUSE;
     config->position_x = 0;
     config->position_y = 0;
@@ -61,6 +63,51 @@ void config_init(config_t *config) {
      }
 }
 
+static int parse_color(const char *color_string, XftColor *xft_color, Display *display) {
+    if (!color_string || !xft_color || !display) {
+        return 0;
+    }
+    
+    if (color_string[0] != '#' || strlen(color_string) != 7) {
+        msg(LOG_WARNING, "Invalid color format '%s' (must be #RRGGBB)", color_string);
+        return 0;
+    }
+    
+    char *endptr;
+    unsigned long color_value = strtoul(color_string + 1, &endptr, 16);
+    if (*endptr != '\0' || color_value > 0xFFFFFF) {
+        msg(LOG_WARNING, "Invalid color value '%s'", color_string);
+        return 0;
+    }
+    
+    XRenderColor render_color = {
+        .red = ((color_value >> 16) & 0xff) << 8,
+        .green = ((color_value >> 8) & 0xff) << 8,
+        .blue = (color_value & 0xff) << 8,
+        .alpha = 0xffff
+    };
+
+    render_color.red = (render_color.red << 8) | render_color.red;
+    render_color.green = (render_color.green << 8) | render_color.green;
+    render_color.blue = (render_color.blue << 8) | render_color.blue;
+    
+    if (!XftColorAllocValue(display, DefaultVisual(display, DefaultScreen(display)),
+                           DefaultColormap(display, DefaultScreen(display)),
+                           &render_color, xft_color)) {
+        msg(LOG_ERR, "Failed to allocate color '%s'", color_string);
+        return 0;
+    }
+    
+    return 1;
+}
+
+void free_color(XftColor *color, Display *display) {
+    if (color && display) {
+        XftColorFree(display, DefaultVisual(display, DefaultScreen(display)),
+                     DefaultColormap(display, DefaultScreen(display)), color);
+    }
+}
+
 // Parse configuration file
 int config_parse_file(config_t *config, const char *filename) {
     FILE *f = fopen(filename, "r");
@@ -75,10 +122,10 @@ int config_parse_file(config_t *config, const char *filename) {
     msg(LOG_NOTICE, "Reading config file: %s", filename);
     
     char line[512];
-    int line_num = 0;
+    int line_number = 0;
     
     while (fgets(line, sizeof(line), f)) {
-        line_num++;
+        line_number++;
         
         // Remove trailing newline and carriage return
         line[strcspn(line, "\r\n")] = 0;
@@ -91,7 +138,7 @@ int config_parse_file(config_t *config, const char *filename) {
         // Find the equals sign
         char *equals = strchr(line, '=');
         if (!equals) {
-            msg(LOG_WARNING, "Invalid config line %d: missing '=' in '%s'", line_num, line);
+            msg(LOG_WARNING, "Invalid config line %d: missing '=' in '%s'", line_number, line);
             continue;
         }
         
@@ -130,6 +177,7 @@ int config_parse_file(config_t *config, const char *filename) {
             }
             config->logfile = strdup(value);
             msg(LOG_DEBUG, "Config: logfile = %s", config->logfile);
+            
         } else if (strcmp(key, "font") == 0) {
             if (config->font) {
                 free(config->font);
@@ -138,44 +186,33 @@ int config_parse_file(config_t *config, const char *filename) {
             msg(LOG_DEBUG, "Config: font = %s", config->font);
 
         } else if (strcmp(key, "font_size") == 0) {
-            // Validate font size
             char *endptr;
-            long font_size_val = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && font_size_val > 0 && font_size_val <= 72) {
-                config->font_size = (int)font_size_val;
+            long font_size_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && font_size_value > 0 && font_size_value <= 72) {
+                config->font_size = (int)font_size_value;
                 msg(LOG_DEBUG, "Config: font_size = %d", config->font_size);
             } else {
-                msg(LOG_WARNING, "Invalid font_size value '%s' on line %d (must be 1-72)", value, line_num);
-            }
-            
-        } else if (strcmp(key, "font_size") == 0) {
-            char *endptr;
-            long font_size_val = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && font_size_val > 0 && font_size_val <= 72) {
-                config->font_size = (int)font_size_val;
-                msg(LOG_DEBUG, "Config: font_size = %d", config->font_size);
-            } else {
-                msg(LOG_WARNING, "Invalid font_size value '%s' on line %d (must be 1-72)", value, line_num);
+                msg(LOG_WARNING, "Invalid font_size value '%s' on line %d (must be 1-72)", value, line_number);
             }
             
         } else if (strcmp(key, "max_lines") == 0) {
             char *endptr;
-            long max_lines_val = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && max_lines_val > 0 && max_lines_val <= 100) {
-                config->max_lines = (int)max_lines_val;
+            long max_lines_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && max_lines_value > 0 && max_lines_value <= 100) {
+                config->max_lines = (int)max_lines_value;
                 msg(LOG_DEBUG, "Config: max_lines = %d", config->max_lines);
             } else {
-                msg(LOG_WARNING, "Invalid max_lines value '%s' on line %d (must be 1-100)", value, line_num);
+                msg(LOG_WARNING, "Invalid max_lines value '%s' on line %d (must be 1-100)", value, line_number);
             }
             
         } else if (strcmp(key, "max_line_length") == 0) {
             char *endptr;
-            long max_line_length_val = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && max_line_length_val > 0 && max_line_length_val <= 500) {
-                config->max_line_length = (int)max_line_length_val;
+            long max_line_length_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && max_line_length_value > 0 && max_line_length_value <= 500) {
+                config->max_line_length = (int)max_line_length_value;
                 msg(LOG_DEBUG, "Config: max_line_length = %d", config->max_line_length);
             } else {
-                msg(LOG_WARNING, "Invalid max_line_length value '%s' on line %d (must be 1-500)", value, line_num);
+                msg(LOG_WARNING, "Invalid max_line_length value '%s' on line %d (must be 1-500)", value, line_number);
             }
             
         } else if (strcmp(key, "history_file") == 0) {
@@ -187,55 +224,34 @@ int config_parse_file(config_t *config, const char *filename) {
             
         } else if (strcmp(key, "timeout") == 0) {
             char *endptr;
-            long timeout_val = strtol(value, &endptr, 10);
-            if (*endptr == '\0' && timeout_val > 0 && timeout_val <= 60) {
-                config->timeout = (int)timeout_val;
+            long timeout_value = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && timeout_value > 0 && timeout_value <= 60) {
+                config->timeout = (int)timeout_value;
                 msg(LOG_DEBUG, "Config: timeout = %d seconds", config->timeout);
             } else {
-                msg(LOG_WARNING, "Invalid timeout value '%s' on line %d (must be 1-60)", value, line_num);
+                msg(LOG_WARNING, "Invalid timeout value '%s' on line %d (must be 1-60)", value, line_number);
             }
             
         } else if (strcmp(key, "background") == 0) {
-            if (value[0] == '#' && strlen(value) == 7) {
-                char *endptr;
-                unsigned long color_value = strtoul(value + 1, &endptr, 16);
-                if (*endptr == '\0' && color_value <= 0xFFFFFF) {
-                    config->background = (unsigned int)color_value;
-                    msg(LOG_DEBUG, "Config: background = 0x%06X", config->background);
-                } else {
-                    msg(LOG_WARNING, "Invalid background color '%s' on line %d (must be #RRGGBB)", value, line_num);
-                }
-            } else {
-                msg(LOG_WARNING, "Invalid background color format '%s' on line %d (must be #RRGGBB)", value, line_num);
+            if (config->background_color_string) {
+                free(config->background_color_string);
             }
+            config->background_color_string = strdup(value);
+            msg(LOG_DEBUG, "Config: background = %s", value);
 
         } else if (strcmp(key, "count_color") == 0) {
-            if (value[0] == '#' && strlen(value) == 7) {
-                char *endptr;
-                unsigned long color_value = strtoul(value + 1, &endptr, 16);
-                if (*endptr == '\0' && color_value <= 0xFFFFFF) {
-                    config->count_color = (unsigned int)color_value;
-                    msg(LOG_DEBUG, "Config: count_color = 0x%06X", config->count_color);
-                } else {
-                    msg(LOG_WARNING, "Invalid count_color color '%s' on line %d (must be #RRGGBB)", value, line_num);
-                }
-            } else {
-                msg(LOG_WARNING, "Invalid count_color color format '%s' on line %d (must be #RRGGBB)", value, line_num);
+            if (config->count_color_string) {
+                free(config->count_color_string);
             }
+            config->count_color_string = strdup(value);
+            msg(LOG_DEBUG, "Config: count_color = %s", value);
             
         } else if (strcmp(key, "foreground") == 0) {
-            if (value[0] == '#' && strlen(value) == 7) {
-                char *endptr;
-                unsigned long color_value = strtoul(value + 1, &endptr, 16);
-                if (*endptr == '\0' && color_value <= 0xFFFFFF) {
-                    config->foreground = (unsigned int)color_value;
-                    msg(LOG_DEBUG, "Config: foreground = 0x%06X", config->foreground);
-                } else {
-                    msg(LOG_WARNING, "Invalid foreground color '%s' on line %d (must be #RRGGBB)", value, line_num);
-                }
-            } else {
-                msg(LOG_WARNING, "Invalid foreground color format '%s' on line %d (must be #RRGGBB)", value, line_num);
+            if (config->foreground_color_string) {
+                free(config->foreground_color_string);
             }
+            config->foreground_color_string = strdup(value);
+            msg(LOG_DEBUG, "Config: foreground = %s", value);
             
         } else if (strcmp(key, "position") == 0) {
             if (strcasecmp(value, "mouse") == 0) {
@@ -252,12 +268,12 @@ int config_parse_file(config_t *config, const char *filename) {
                 char *colon = strchr(value, ':');
                 if (colon) {
                     *colon = '\0';
-                    char *x_str = value;
-                    char *y_str = colon + 1;
+                    char *x_string = value;
+                    char *y_string = colon + 1;
                     
                     char *x_endptr, *y_endptr;
-                    long x_value = strtol(x_str, &x_endptr, 10);
-                    long y_value = strtol(y_str, &y_endptr, 10);
+                    long x_value = strtol(x_string, &x_endptr, 10);
+                    long y_value = strtol(y_string, &y_endptr, 10);
                     
                     if (*x_endptr == '\0' && *y_endptr == '\0' && 
                         x_value >= 0 && x_value <= 9999 &&
@@ -267,10 +283,10 @@ int config_parse_file(config_t *config, const char *filename) {
                         config->position_y = (int)y_value;
                         msg(LOG_DEBUG, "Config: position = ABSOLUTE (%d:%d)", config->position_x, config->position_y);
                     } else {
-                        msg(LOG_WARNING, "Invalid absolute position '%s' on line %d (must be X:Y with valid coordinates)", value, line_num);
+                        msg(LOG_WARNING, "Invalid absolute position '%s' on line %d (must be X:Y with valid coordinates)", value, line_number);
                     }
                 } else {
-                    msg(LOG_WARNING, "Invalid position value '%s' on line %d (must be 'mouse', 'screen' or 'X:Y')", value, line_num);
+                    msg(LOG_WARNING, "Invalid position value '%s' on line %d (must be 'mouse', 'screen' or 'X:Y')", value, line_number);
                 }
             }
 
@@ -281,21 +297,21 @@ int config_parse_file(config_t *config, const char *filename) {
                 config->anchor = (PopupAnchor)anchor_value;
                 msg(LOG_DEBUG, "Config: anchor = %d", config->anchor);
             } else {
-                msg(LOG_WARNING, "Invalid anchor value '%s' on line %d (must be 1-9)", value, line_num);
+                msg(LOG_WARNING, "Invalid anchor value '%s' on line %d (must be 1-9)", value, line_number);
             }
             
         } else if (strcmp(key, "margin") == 0) {
             char *space = strchr(value, ' ');
             if (space) {
                 *space = '\0';
-                char *vertical_str = value;
-                char *horizontal_str = space + 1;
+                char *vertical_string = value;
+                char *horizontal_string = space + 1;
                 
-                while (*horizontal_str == ' ' || *horizontal_str == '\t') horizontal_str++;
+                while (*horizontal_string == ' ' || *horizontal_string == '\t') horizontal_string++;
                 
                 char *vertical_endptr, *horizontal_endptr;
-                long vertical_value = strtol(vertical_str, &vertical_endptr, 10);
-                long horizontal_value = strtol(horizontal_str, &horizontal_endptr, 10);
+                long vertical_value = strtol(vertical_string, &vertical_endptr, 10);
+                long horizontal_value = strtol(horizontal_string, &horizontal_endptr, 10);
                 
                 if (*vertical_endptr == '\0' && *horizontal_endptr == '\0' && 
                     vertical_value >= 0 && vertical_value <= 100 &&
@@ -304,7 +320,7 @@ int config_parse_file(config_t *config, const char *filename) {
                     config->margin_horizontal = (int)horizontal_value;
                     msg(LOG_DEBUG, "Config: margin = %d %d", config->margin_vertical, config->margin_horizontal);
                 } else {
-                    msg(LOG_WARNING, "Invalid margin values '%s' on line %d (must be two values 0-100)", value, line_num);
+                    msg(LOG_WARNING, "Invalid margin values '%s' on line %d (must be two values 0-100)", value, line_number);
                 }
             } else {
                 char *endptr;
@@ -314,12 +330,12 @@ int config_parse_file(config_t *config, const char *filename) {
                     config->margin_horizontal = (int)margin_value;
                     msg(LOG_DEBUG, "Config: margin = %d", config->margin_vertical);
                 } else {
-                    msg(LOG_WARNING, "Invalid margin value '%s' on line %d (must be 0-100)", value, line_num);
+                    msg(LOG_WARNING, "Invalid margin value '%s' on line %d (must be 0-100)", value, line_number);
                 }
             }
 
         } else {
-            msg(LOG_WARNING, "Unknown config option '%s' on line %d", key, line_num);
+            msg(LOG_WARNING, "Unknown config option '%s' on line %d", key, line_number);
         }
     }
     
@@ -340,6 +356,25 @@ int config_apply(config_t *config) {
     return 1;
 }
 
+int config_load_colors(config_t *config, Display *display) {
+    if (!parse_color(config->background_color_string, &config->background, display)) {
+        msg(LOG_WARNING, "Failed to parse background color, using default");
+        parse_color("#ffffff", &config->background, display);
+    }
+    
+    if (!parse_color(config->foreground_color_string, &config->foreground, display)) {
+        msg(LOG_WARNING, "Failed to parse foreground color, using default");
+        parse_color("#000000", &config->foreground, display);
+    }
+    
+    if (!parse_color(config->count_color_string, &config->count_color, display)) {
+        msg(LOG_WARNING, "Failed to parse count color, using default");
+        parse_color("#666666", &config->count_color, display);
+    }
+    
+    return 1;
+}
+
 // Free configuration resources
 void config_free(config_t *config) {
     if (config->logfile) {
@@ -354,6 +389,22 @@ void config_free(config_t *config) {
         free(config->overflow_directory);
         config->overflow_directory = NULL;
     }
+    if (config->background_color_string) {
+        free(config->background_color_string);
+        config->background_color_string = NULL;
+    }
+    if (config->foreground_color_string) {
+        free(config->foreground_color_string);
+        config->foreground_color_string = NULL;
+    }
+    if (config->count_color_string) {
+        free(config->count_color_string);
+        config->count_color_string = NULL;
+    }
+    
+    free_color(&config->background, g_display);
+    free_color(&config->foreground, g_display);
+    free_color(&config->count_color, g_display);
 }
 
 // Print current configuration

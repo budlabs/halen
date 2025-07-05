@@ -21,8 +21,6 @@ static GC popup_gc = 0;
 static XftDraw *xft_draw = NULL;
 static XftFont *xft_font = NULL;
 static XftFont *xft_font_small = NULL;
-static XftColor xft_color;
-static XftColor xft_color_count;
 static int screen_width = 0;
 static int screen_height = 0;
 static int showing_popup = 0;  
@@ -95,7 +93,7 @@ void popup_redraw(void) {
     int index_x_position = window_attributes.width - index_extents.width - 2;
     int index_y_position = small_font->ascent + 2;
     
-    XftDrawStringUtf8(xft_draw, &xft_color_count, small_font, index_x_position, index_y_position,
+    XftDrawStringUtf8(xft_draw, &config.count_color, small_font, index_x_position, index_y_position,
                       (FcChar8*)index_count_text, strlen(index_count_text));
      
     char *unescaped_text = text_unescape_content(popup_text_buffer);
@@ -105,14 +103,14 @@ void popup_redraw(void) {
          
         while ((line_end = strchr(line_start, '\n')) != NULL) {
             *line_end = '\0';
-            XftDrawStringUtf8(xft_draw, &xft_color, xft_font, left_margin, current_y_position,
+            XftDrawStringUtf8(xft_draw, &config.foreground, xft_font, left_margin, current_y_position,
                               (FcChar8*)line_start, strlen(line_start));
             current_y_position += line_spacing;
             line_start = line_end + 1;
         }
          
         if (*line_start) {
-            XftDrawStringUtf8(xft_draw, &xft_color, xft_font, left_margin, current_y_position,
+            XftDrawStringUtf8(xft_draw, &config.foreground, xft_font, left_margin, current_y_position,
                               (FcChar8*)line_start, strlen(line_start));
             current_y_position += line_spacing;
         }
@@ -130,7 +128,7 @@ void popup_redraw(void) {
     XftFont *statusbar_font = xft_font_small ? xft_font_small : xft_font;
     int statusbar_ascent = statusbar_font->ascent;
     
-    XftDrawStringUtf8(xft_draw, &xft_color, statusbar_font, left_margin, statusbar_y + statusbar_ascent,
+    XftDrawStringUtf8(xft_draw, &config.foreground, statusbar_font, left_margin, statusbar_y + statusbar_ascent,
                       (FcChar8*)statusbar_text, strlen(statusbar_text));
 
     XFlush(display);
@@ -467,40 +465,6 @@ int popup_init(Display *dpy, Window root, int width, int height) {
     font_height = xft_font->height;
     font_ascent = xft_font->ascent;
     
-    XRenderColor render_color = {
-        .red = (config.foreground >> 16) & 0xff,
-        .green = (config.foreground >> 8) & 0xff, 
-        .blue = config.foreground & 0xff,
-        .alpha = 0xffff
-    };
-    render_color.red = (render_color.red << 8) | render_color.red;
-    render_color.green = (render_color.green << 8) | render_color.green;
-    render_color.blue = (render_color.blue << 8) | render_color.blue;
-    
-    if (!XftColorAllocValue(display, DefaultVisual(display, DefaultScreen(display)),
-                           DefaultColormap(display, DefaultScreen(display)),
-                           &render_color, &xft_color)) {
-        msg(LOG_ERR, "Failed to allocate text color");
-        return 0;
-    }
-
-    XRenderColor render_color_count = {
-        .red = (config.count_color >> 16) & 0xff,
-        .green = (config.count_color >> 8) & 0xff, 
-        .blue = config.count_color & 0xff,
-        .alpha = 0xffff
-    };
-    render_color_count.red = (render_color_count.red << 8) | render_color_count.red;
-    render_color_count.green = (render_color_count.green << 8) | render_color_count.green;
-    render_color_count.blue = (render_color_count.blue << 8) | render_color_count.blue;
-    
-    if (!XftColorAllocValue(display, DefaultVisual(display, DefaultScreen(display)),
-                           DefaultColormap(display, DefaultScreen(display)),
-                           &render_color_count, &xft_color_count)) {
-        msg(LOG_ERR, "Failed to allocate text color");
-        return 0;
-    }
-    
     msg(LOG_NOTICE, "Popup system initialized with Xlib: %dx%d", width, height);
     return 1;
 }
@@ -518,8 +482,8 @@ int popup_show(const char *text) {
     popup_text_buffer[popup_text_capacity - 1] = '\0';
     
     XSetWindowAttributes window_attributes;
-    window_attributes.background_pixel = config.background;
-    window_attributes.border_pixel = config.foreground;
+    window_attributes.background_pixel = config.background.pixel;
+    window_attributes.border_pixel = config.foreground.pixel;
     window_attributes.override_redirect = True;
     
     int popup_width = 600;
@@ -611,12 +575,6 @@ void popup_cleanup(void) {
         XftFontClose(display, xft_font_small);
         xft_font_small = NULL;
     }
-    
-    XftColorFree(display, DefaultVisual(display, DefaultScreen(display)),
-                 DefaultColormap(display, DefaultScreen(display)), &xft_color);
-
-    XftColorFree(display, DefaultVisual(display, DefaultScreen(display)),
-                 DefaultColormap(display, DefaultScreen(display)), &xft_color_count);
     
     if (popup_text_buffer) {
         free(popup_text_buffer);

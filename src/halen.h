@@ -4,6 +4,7 @@
 #include "config.h"
 #include <sys/syslog.h>
 #include <X11/Xlib.h>
+#include <X11/Xft/Xft.h>
 
 #define MAX_OVERFLOW_FILE_SIZE (50 * 1024 * 1024)
 
@@ -43,9 +44,12 @@ typedef struct {
     int max_line_length;
     char *font;
     int font_size;
-    int background; // Color for popup background
-    int foreground;       // Color for popup text
-    int count_color;       // Color for count text
+    XftColor background; // Color for popup background
+    XftColor foreground;       // Color for popup text
+    XftColor count_color;       // Color for count text
+    char *background_color_string;
+    char *foreground_color_string;
+    char *count_color_string;
     PopupPosition position;
     int position_x;
     int position_y;

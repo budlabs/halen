@@ -599,6 +599,8 @@ int main(int argc, char *argv[]) {
         config_free(&config);
         return EXIT_FAILURE;
     }
+
+    config_load_colors(&config, g_display);
     
     msg(LOG_NOTICE, "X Display opened successfully");
     

@@ -18,11 +18,9 @@
 #define METADATA_PREFIX "# HALEN_METADATA: "
 #define MAX_CLIPBOARD_ENTRIES 50
 
-
 static history_entry_t *entries = NULL;
 static int history_count = 0;
 static int current_index = -1;
-
 
 static char* load_overflow_content_by_hash(const char* overflow_hash);
 static int replace_file_atomically(const char* source_filename, const char* target_filename);

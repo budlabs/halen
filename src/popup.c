@@ -11,8 +11,8 @@
 
 #include "popup.h"
 #include "halen.h"
-#include "clipboard.h"
 #include "text.h"
+#include "history.h"
 
 static Display *display = NULL;
 static Window root_window = 0;
@@ -74,8 +74,8 @@ void popup_redraw(void) {
     XGetWindowAttributes(display, popup_window, &window_attributes);
 
     char index_count_text[32];
-    int history_count = clipboard_get_history_count();
-    int current_index = clipboard_get_current_index();
+    int history_count = history_get_count();
+    int current_index = history_get_current_index();
     
     int display_index;
     if (current_index == -1) {

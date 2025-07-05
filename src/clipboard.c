@@ -377,31 +377,3 @@ int clipboard_set_content(const char* content) {
     
     return set_clipboard_content(content);
 }
-
-int clipboard_delete_entry(int index) {
-    return history_delete_entry(index);
-}
-
-char* clipboard_entry_get_truncated(int n) {
-    return history_get_entry_truncated(n);
-}
-
-char* clipboard_entry_get_content(int n) {
-    return history_get_entry_full_content(n);
-}
-
-void clipboard_set_current_index(int index) {
-    history_set_current_index(index);
-}
-
-int clipboard_get_current_index(void) {
-    return history_get_current_index();
-}
-
-int clipboard_get_history_count(void) {
-    return history_get_count();
-}
-
-void clipboard_reset_navigation(void) {
-    history_reset_navigation();
-}

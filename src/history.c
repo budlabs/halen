@@ -3,6 +3,7 @@
 #include "halen.h"
 #include "clipboard.h"
 #include "xdg.h"
+#include "text.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,7 @@
 static history_entry_t *entries = NULL;
 static int history_count = 0;
 static int current_index = -1;
-static size_t max_clipboard_memory_size = 0;
+
 
 static char* load_overflow_content_by_hash(const char* overflow_hash);
 static int replace_file_atomically(const char* source_filename, const char* target_filename);
@@ -33,13 +34,14 @@ static int read_history_metadata(FILE *file, history_metadata_t *metadata);
 static void write_history_metadata(FILE *file, const history_metadata_t *metadata);
 static int count_history_entries_in_file(FILE* file);
 static int load_history_entries(void);
-static uint32_t calculate_content_hash(const char *content);
 static void get_timestamp(char *buffer, size_t size);
-static char* create_display_formatted_content(const char *content);
-static char* truncate_content_for_storage(const char *content, char **overflow_hash);
 static char* transform_content_escaping(const char* content, int should_escape);
 static char* extract_display_content(const char *raw_content);
 static history_entry_t entry_parse(const char *line);
+
+static char* transform_content_escaping(const char* content, int should_escape) {
+    return should_escape ? text_escape_content(content) : text_unescape_content(content);
+}
 
 static char* load_overflow_content_by_hash(const char* overflow_hash) {
     if (!config.overflow_directory || !overflow_hash) return NULL;
@@ -152,7 +154,7 @@ static void regenerate_truncated_entries(void) {
         if (overflow_hash) {
             char *full_content = load_overflow_content_by_hash(overflow_hash);
             if (full_content) {
-                char *regenerated_content = create_display_formatted_content(full_content);
+                char *regenerated_content = text_format_for_display(full_content);
                 if (regenerated_content) {
                     char *escaped_regenerated = transform_content_escaping(regenerated_content, 1);
                     if (escaped_regenerated) {
@@ -350,19 +352,6 @@ static int load_history_entries(void) {
     return history_count;
 }
 
-
-static uint32_t calculate_content_hash(const char *content) {
-    uint32_t hash_value = 2166136261u;
-    const uint32_t prime = 16777619u;
-    
-    for (const char *character = content; *character; character++) {
-        hash_value ^= (uint32_t)*character;
-        hash_value *= prime;
-    }
-    
-    return hash_value;
-}
-
 static void get_timestamp(char *buffer, size_t size) {
     struct timeval tv;
     struct tm *tm_info;
@@ -376,201 +365,10 @@ static void get_timestamp(char *buffer, size_t size) {
              (int)(tv.tv_usec / 1000));
 }
 
-static char* create_display_formatted_content(const char *content) {
-    if (!content) return NULL;
-    
-    size_t buffer_size = (config.max_lines * (config.max_line_length + 1)) + 100;
-    char *result = malloc(buffer_size);
-    if (!result) return strdup(content);
-    
-    char *write_position = result;
-    const char *line_start = content;
-    int displayed_lines = 0;
-    int total_lines = 0;
-    
-    for (const char *p = content; *p; p++) {
-        if (*p == '\n') total_lines++;
-    }
-    if (*content && content[strlen(content) - 1] != '\n') {
-        total_lines++;
-    }
-    
-    while (*line_start && displayed_lines < config.max_lines) {
-        const char *line_end = strchr(line_start, '\n');
-        int line_length;
-        
-        if (line_end) {
-            line_length = line_end - line_start;
-        } else {
-            line_length = strlen(line_start);
-        }
-        
-        if (displayed_lines > 0) {
-            *write_position++ = '\n';
-        }
-        
-        if (line_length > config.max_line_length) {
-            strncpy(write_position, line_start, config.max_line_length - 3);
-            write_position += config.max_line_length - 3;
-            strcpy(write_position, "...");
-            write_position += 3;
-        } else {
-            strncpy(write_position, line_start, line_length);
-            write_position += line_length;
-        }
-        
-        displayed_lines++;
-        
-        if (line_end) {
-            line_start = line_end + 1;
-        } else {
-            break;
-        }
-    }
-    
-    int remaining_lines = total_lines - displayed_lines;
-    if (remaining_lines > 0) {
-        sprintf(write_position, "\n(+%d lines)", remaining_lines);
-    } else {
-        *write_position = '\0';
-    }
-    
-    return result;
-}
-
-static char* truncate_content_for_storage(const char *content, char **overflow_hash) {
-    int content_length = strlen(content);
-    int line_count = 0;
-    int current_line_length = 0;
-    int needs_truncation = 0;
-    
-    // Check if content exceeds limits
-    for (int i = 0; i < content_length; i++) {
-        if (content[i] == '\n') {
-            line_count++;
-            current_line_length = 0;
-            if (line_count >= config.max_lines) {
-                needs_truncation = 1;
-                break;
-            }
-        } else {
-            current_line_length++;
-            if (current_line_length > config.max_line_length) {
-                needs_truncation = 1;
-                break;
-            }
-        }
-    }
-    
-    if (!needs_truncation) {
-        *overflow_hash = NULL;
-        return strdup(content);
-    }
-    
-    if (!config.overflow_directory) {
-        *overflow_hash = NULL;
-        return strdup(content);
-    }
-    
-    // Create overflow file with full content
-    uint32_t content_hash = calculate_content_hash(content);
-    *overflow_hash = malloc(16);
-    if (!*overflow_hash) {
-        return strdup(content);
-    }
-    snprintf(*overflow_hash, 16, "%08x", content_hash);
-    
-    char overflow_file_path[PATH_MAX];
-    snprintf(overflow_file_path, sizeof(overflow_file_path), "%s/%s", 
-             config.overflow_directory, *overflow_hash);
-    
-    FILE *overflow_file = fopen(overflow_file_path, "w");
-    if (overflow_file) {
-        fprintf(overflow_file, "%s", content);
-        fclose(overflow_file);
-    } else {
-        free(*overflow_hash);
-        *overflow_hash = NULL;
-        return strdup(content);
-    }
-    
-    // Create truncated version with "..." marker
-    char *truncated_content = create_display_formatted_content(content);
-    if (!truncated_content) {
-        truncated_content = strdup(content);
-    }
-    
-    return truncated_content;
-}
 
 static void write_history_metadata(FILE *file, const history_metadata_t *metadata) {
     fprintf(file, "%smax_lines=%d max_line_length=%d\n", 
             METADATA_PREFIX, metadata->max_lines, metadata->max_line_length);
-}
-
-static char* transform_content_escaping(const char* content, int should_escape) {
-    if (!content) return NULL;
-    
-    size_t content_length = strlen(content);
-    size_t max_result_size = should_escape ? (content_length * 2 + 1) : (content_length + 1);
-    
-    if (max_result_size > max_clipboard_memory_size) {
-        max_result_size = max_clipboard_memory_size;
-        msg(LOG_WARNING, "Content too large for escaping, truncating");
-    }
-    
-    char *result = malloc(max_result_size);
-    if (!result) return NULL;
-    
-    const char *source = content;
-    char *destination = result;
-    char *result_end = result + max_result_size - 1;
-    
-    if (should_escape) {
-        while (*source && destination < result_end - 1) {
-            switch (*source) {
-                case '\n': 
-                    if (destination < result_end - 2) {
-                        *destination++ = '\\'; 
-                        *destination++ = 'n'; 
-                    }
-                    break;
-                case '\r': 
-                    if (destination < result_end - 2) {
-                        *destination++ = '\\'; 
-                        *destination++ = 'r'; 
-                    }
-                    break;
-                case '\t': 
-                    if (destination < result_end - 2) {
-                        *destination++ = '\\'; 
-                        *destination++ = 't'; 
-                    }
-                    break;
-                default: 
-                    *destination++ = *source; 
-                    break;
-            }
-            source++;
-        }
-    } else {
-        while (*source && destination < result_end) {
-            if (*source == '\\' && *(source + 1) && destination < result_end - 1) {
-                switch (*(source + 1)) {
-                    case 'n': *destination++ = '\n'; source += 2; break;
-                    case 'r': *destination++ = '\r'; source += 2; break;
-                    case 't': *destination++ = '\t'; source += 2; break;
-                    default: *destination++ = *source++; break;
-                }
-            } else {
-                *destination++ = *source++;
-            }
-        }
-    }
-    *destination = '\0';
-    
-    char *trimmed_result = realloc(result, strlen(result) + 1);
-    return trimmed_result ? trimmed_result : result;
 }
 
 static char* extract_display_content(const char *raw_content) {
@@ -594,17 +392,10 @@ int history_add_entry(const char *content, const char *source) {
     if (!config.history_file) return 0;
 
     char *overflow_hash = NULL;
-    char *storage_content = truncate_content_for_storage(content, &overflow_hash);
+    char *storage_content = text_truncate_for_storage(content, &overflow_hash);
     if (!storage_content) return 0;
     
-    int has_content_flag = 0;
-    for (const char *character = storage_content; *character; character++) {
-        if (*character != ' ' && *character != '\t' && *character != '\n' && *character != '\r') {
-            has_content_flag = 1;
-            break;
-        }
-    }
-    if (!has_content_flag) {
+    if (!text_contains_non_whitespace(storage_content)) {
         free(storage_content);
         if (overflow_hash) free(overflow_hash);
         return 0;
@@ -960,8 +751,6 @@ int history_initialize(void) {
     entries = NULL;
     history_count = 0;
     current_index = -1;
-    
-    max_clipboard_memory_size = (config.max_lines * config.max_line_length * 2) + 1024;
     
     return 1;
 }

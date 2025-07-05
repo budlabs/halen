@@ -24,6 +24,7 @@
 #include "parser.h"
 #include "history.h"
 #include "xdg.h"
+#include "text.h"
 
 Display *g_display = NULL;
 Window g_root_window;
@@ -606,6 +607,8 @@ int main(int argc, char *argv[]) {
     Screen *screen = DefaultScreenOfDisplay(g_display);
     int screen_width = WidthOfScreen(screen);
     int screen_height = HeightOfScreen(screen);
+
+    text_set_memory_limit();
     
     if (!history_initialize()) {
         msg(LOG_ERR, "Failed to initialize history system");

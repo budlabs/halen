@@ -12,6 +12,7 @@
 #include "popup.h"
 #include "halen.h"
 #include "clipboard.h"
+#include "text.h"
 
 static Display *display = NULL;
 static Window root_window = 0;
@@ -97,27 +98,8 @@ void popup_redraw(void) {
     XftDrawStringUtf8(xft_draw, &xft_color_count, small_font, index_x_position, index_y_position,
                       (FcChar8*)index_count_text, strlen(index_count_text));
      
-    char *unescaped_text = malloc(strlen(popup_text_buffer) + 1);
+    char *unescaped_text = text_unescape_content(popup_text_buffer);
     if (unescaped_text) {
-        const char *source_pointer = popup_text_buffer;
-        char *destination_pointer = unescaped_text;
-         
-        while (*source_pointer) {
-            if (*source_pointer == '\\' && *(source_pointer + 1) == 'n') {
-                *destination_pointer++ = '\n';
-                source_pointer += 2;
-            } else if (*source_pointer == '\\' && *(source_pointer + 1) == 't') {
-                *destination_pointer++ = '\t';
-                source_pointer += 2;
-            } else if (*source_pointer == '\\' && *(source_pointer + 1) == 'r') {
-                *destination_pointer++ = '\r';
-                source_pointer += 2;
-            } else {
-                *destination_pointer++ = *source_pointer++;
-            }
-        }
-        *destination_pointer = '\0';
-         
         char *line_start = unescaped_text;
         char *line_end;
          
@@ -403,27 +385,8 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
     int max_width = 0;
     int total_height = font_height + 20;
     
-    char *unescaped_text = malloc(strlen(text) + 1);
+    char *unescaped_text = text_unescape_content(text);
     if (!unescaped_text) return 0;
-    
-    const char *source_pointer = text;
-    char *destination_pointer = unescaped_text;
-    
-    while (*source_pointer) {
-        if (*source_pointer == '\\' && *(source_pointer + 1) == 'n') {
-            *destination_pointer++ = '\n';
-            source_pointer += 2;
-        } else if (*source_pointer == '\\' && *(source_pointer + 1) == 't') {
-            *destination_pointer++ = '\t';
-            source_pointer += 2;
-        } else if (*source_pointer == '\\' && *(source_pointer + 1) == 'r') {
-            *destination_pointer++ = '\r';
-            source_pointer += 2;
-        } else {
-            *destination_pointer++ = *source_pointer++;
-        }
-    }
-    *destination_pointer = '\0';
     
     char *line_start = unescaped_text;
     char *line_end;

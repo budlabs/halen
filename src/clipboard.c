@@ -5,6 +5,7 @@
 #include "halen.h"
 #include "history.h"
 #include "xdg.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -359,7 +360,9 @@ char* clipboard_get_content(const char* selection_name) {
         content[--total] = '\0';
     }
     
-    char *final_content = realloc(content, total + 1);
+    text_trim_trailing_whitespace(content);
+    
+    char *final_content = realloc(content, strlen(content) + 1);
     return final_content ? final_content : content;
 }
 

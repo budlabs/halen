@@ -4,8 +4,6 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 
-#define MAX_CLIPBOARD_SIZE (10 * 1024 * 1024)
-
 // Initialize clipboard monitoring system
 int clipboard_init(void);
 

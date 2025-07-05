@@ -24,13 +24,39 @@
 static pthread_t clipboard_thread;
 static int clipboard_thread_running = 0;
 static Display *clipboard_display = NULL;
-static char last_clipboard_content[MAX_CLIPBOARD_SIZE] = {0};
-static char last_primary_content[MAX_CLIPBOARD_SIZE] = {0};
+static char *last_clipboard_content = NULL;
+static char *last_primary_content = NULL;
+static size_t clipboard_content_buffer_size = 0;
 
 static void* clipboard_monitor_thread(void* arg);
 static void handle_clipboard_change_threaded(Atom selection, Atom clipboard_atom_local, Atom primary_atom_local);
 
 static void poll_clipboard_changes(Display *display, Atom clipboard_atom_local, Atom primary_atom_local);
+
+static int ensure_content_buffer_capacity(void) {
+    size_t required_capacity = (config.max_lines * config.max_line_length) + 1024;
+    
+    if (clipboard_content_buffer_size < required_capacity) {
+        char *new_clipboard_buffer = realloc(last_clipboard_content, required_capacity);
+        char *new_primary_buffer = realloc(last_primary_content, required_capacity);
+        
+        if (!new_clipboard_buffer || !new_primary_buffer) {
+            msg(LOG_ERR, "Failed to allocate clipboard content buffers");
+            return 0;
+        }
+        
+        last_clipboard_content = new_clipboard_buffer;
+        last_primary_content = new_primary_buffer;
+        clipboard_content_buffer_size = required_capacity;
+        
+        if (clipboard_content_buffer_size == required_capacity) {
+            last_clipboard_content[0] = '\0';
+            last_primary_content[0] = '\0';
+        }
+    }
+    
+    return 1;
+}
 
 static int set_clipboard_content(const char* content) {
     if (!content || strlen(content) == 0) {
@@ -46,12 +72,12 @@ static int set_clipboard_content(const char* content) {
         return 0;
     }
     
-    size_t content_len = strlen(content);
-    size_t written = fwrite(content, 1, content_len, fp);
+    size_t content_length = strlen(content);
+    size_t bytes_written = fwrite(content, 1, content_length, fp);
     
-    if (written != content_len) {
+    if (bytes_written != content_length) {
         msg(LOG_WARNING, "Failed to write all content to xclip: %zu/%zu bytes", 
-            written, content_len);
+            bytes_written, content_length);
         pclose(fp);
         return 0;
     }
@@ -83,14 +109,18 @@ static void handle_clipboard_change_threaded(Atom selection, Atom clipboard_atom
     
     char *content = clipboard_get_content(xclip_name);
     if (content) {
+        if (!ensure_content_buffer_capacity()) {
+            free(content);
+            return;
+        }
         
         char *last_content = (selection == clipboard_atom_local) ? 
                            last_clipboard_content : last_primary_content;
         
         if (strcmp(content, last_content) != 0) {
             msg(LOG_DEBUG, "Content changed, saving to history");
-            strncpy(last_content, content, MAX_CLIPBOARD_SIZE - 1);
-            last_content[MAX_CLIPBOARD_SIZE - 1] = '\0';
+            strncpy(last_content, content, clipboard_content_buffer_size - 1);
+            last_content[clipboard_content_buffer_size - 1] = '\0';
             history_add_entry(content, selection_name);
         } else {
             msg(LOG_DEBUG, "Content unchanged, skipping save");
@@ -133,7 +163,6 @@ static void* clipboard_monitor_thread(void* arg) {
     
     msg(LOG_NOTICE, "Clipboard thread started");
     
-    // Open separate X11 display for this thread
     clipboard_display = XOpenDisplay(NULL);
     if (!clipboard_display) {
         msg(LOG_ERR, "Failed to open display in clipboard thread");
@@ -188,13 +217,13 @@ static void* clipboard_monitor_thread(void* arg) {
                 XNextEvent(clipboard_display, &event);
                 
                 if (event.type == xfixes_event_base + XFixesSelectionNotify) {
-                    XFixesSelectionNotifyEvent *sn = (XFixesSelectionNotifyEvent *)&event;
+                    XFixesSelectionNotifyEvent *selection_notify_event = (XFixesSelectionNotifyEvent *)&event;
                     
-                    const char *selection_name = (sn->selection == thread_clipboard_atom) ? "CLIPBOARD" : "PRIMARY";
-                    msg(LOG_DEBUG, "%s selection changed, owner: %lu", selection_name, sn->owner);
+                    const char *selection_name = (selection_notify_event->selection == thread_clipboard_atom) ? "CLIPBOARD" : "PRIMARY";
+                    msg(LOG_DEBUG, "%s selection changed, owner: %lu", selection_name, selection_notify_event->owner);
                     
-                    if (sn->owner != None) {
-                        handle_clipboard_change_threaded(sn->selection, 
+                    if (selection_notify_event->owner != None) {
+                        handle_clipboard_change_threaded(selection_notify_event->selection, 
                                                         thread_clipboard_atom, 
                                                         thread_primary_atom);
                     }
@@ -219,8 +248,13 @@ static void* clipboard_monitor_thread(void* arg) {
 int clipboard_init(void) {
     clipboard_thread_running = 0;
     clipboard_display = NULL;
-    last_clipboard_content[0] = '\0';
-    last_primary_content[0] = '\0';
+    last_clipboard_content = NULL;
+    last_primary_content = NULL;
+    clipboard_content_buffer_size = 0;
+    
+    if (!ensure_content_buffer_capacity()) {
+        return 0;
+    }
     
     msg(LOG_NOTICE, "Clipboard system initialized");
     return 1;
@@ -255,6 +289,16 @@ void clipboard_stop_monitoring(void) {
         pthread_join(clipboard_thread, NULL);
         msg(LOG_NOTICE, "Clipboard monitoring thread stopped");
     }
+    
+    if (last_clipboard_content) {
+        free(last_clipboard_content);
+        last_clipboard_content = NULL;
+    }
+    if (last_primary_content) {
+        free(last_primary_content);
+        last_primary_content = NULL;
+    }
+    clipboard_content_buffer_size = 0;
 }
 
 // depends on xclip command. selection_name is either "clipboard" or "primary"
@@ -267,16 +311,41 @@ char* clipboard_get_content(const char* selection_name) {
     FILE *fp = popen(command, "r");
     if (!fp) return NULL;
     
-    char *content = malloc(MAX_CLIPBOARD_SIZE);
+    size_t initial_buffer_size = config.max_lines * config.max_line_length + 4096;
+    char *content = malloc(initial_buffer_size);
     if (!content) {
         pclose(fp);
         return NULL;
     }
     
     size_t total = 0;
-    size_t bytes;
-    while ((bytes = fread(content + total, 1, MAX_CLIPBOARD_SIZE - total - 1, fp)) > 0) {
-        total += bytes;
+    size_t capacity = initial_buffer_size;
+    char buffer[4096];
+    size_t bytes_read;
+    
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+        if (total + bytes_read >= capacity) {
+            size_t new_capacity = capacity * 2;
+            if (new_capacity > MAX_OVERFLOW_FILE_SIZE) {
+                new_capacity = MAX_OVERFLOW_FILE_SIZE;
+                if (total >= new_capacity - 1) {
+                    msg(LOG_NOTICE, "Clipboard content exceeds maximum size, will use overflow");
+                    break;
+                }
+                bytes_read = new_capacity - total - 1;
+            }
+            
+            char *new_content = realloc(content, new_capacity);
+            if (!new_content) {
+                msg(LOG_WARNING, "Failed to expand clipboard buffer");
+                break;
+            }
+            content = new_content;
+            capacity = new_capacity;
+        }
+        
+        memcpy(content + total, buffer, bytes_read);
+        total += bytes_read;
     }
     content[total] = '\0';
     
@@ -290,7 +359,8 @@ char* clipboard_get_content(const char* selection_name) {
         content[--total] = '\0';
     }
     
-    return content;
+    char *final_content = realloc(content, total + 1);
+    return final_content ? final_content : content;
 }
 
 int clipboard_set_content(const char* content) {
@@ -305,7 +375,6 @@ int clipboard_set_content(const char* content) {
     return set_clipboard_content(content);
 }
 
-// Add this public function near the end of the file, before clipboard_set_content
 int clipboard_delete_entry(int index) {
     return history_delete_entry(index);
 }

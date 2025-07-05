@@ -7,7 +7,7 @@ NAME ?= halen
 BUILD_DIR ?= build
 
 CC ?= gcc
-CFLAGS += -Wall -Wextra -std=gnu99 -g -O0 -I$(BUILD_DIR) -I$(SRC_DIR) $(shell pkg-config --cflags x11 xtst xext xfixes fontconfig xft)
+CFLAGS += -Wall -Wextra -std=gnu99 -O0 -I$(BUILD_DIR) -I$(SRC_DIR) $(shell pkg-config --cflags x11 xtst xext xfixes fontconfig xft)
 LIBS = $(shell pkg-config --libs x11 xtst xext xfixes fontconfig xft) -lpthread
 SRC_DIR = src
 

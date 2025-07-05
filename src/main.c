@@ -130,6 +130,7 @@ static void cleanup_resources(void) {
     clipboard_stop_monitoring();
     hotkey_cleanup();
     history_cleanup();
+    popup_cleanup();
     
     if (signal_pipe_read_fd != -1) {
         close(signal_pipe_read_fd);

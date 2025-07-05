@@ -25,12 +25,30 @@ static XftColor xft_color_count;
 static int screen_width = 0;
 static int screen_height = 0;
 static int showing_popup = 0;  
-static char popup_text[256] = {0};
+static char *popup_text_buffer = NULL;
+static size_t popup_text_capacity = 0;
 static int font_height = 14;
 static int font_ascent = 12;
 static int anchor_x = -1;
 static int anchor_y = -1;
 static int initial_resize_done = 0;
+
+static int ensure_popup_text_capacity(void) {
+    size_t required_capacity = (config.max_lines * (config.max_line_length + 1)) + 256;
+    
+    if (popup_text_capacity < required_capacity) {
+        char *new_buffer = realloc(popup_text_buffer, required_capacity);
+        if (!new_buffer) {
+            msg(LOG_ERR, "Failed to allocate popup text buffer");
+            return 0;
+        }
+        popup_text_buffer = new_buffer;
+        popup_text_capacity = required_capacity;
+        msg(LOG_DEBUG, "Resized popup text buffer to %zu bytes", required_capacity);
+    }
+    
+    return 1;
+}
 
 void popup_redraw(void);
 static int calculate_text_dimensions(const char *text, int *width, int *height);
@@ -40,7 +58,7 @@ static void resize_window(void);
 void popup_redraw(void);
 
 void popup_redraw(void) {
-    if (!xft_draw || !xft_font) return;
+    if (!xft_draw || !xft_font || !popup_text_buffer) return;
 
     XClearWindow(display, popup_window);
     resize_window();
@@ -60,9 +78,9 @@ void popup_redraw(void) {
     
     int display_index;
     if (current_index == -1) {
-        display_index = 1;  // Show as entry 1 when no selection
+        display_index = 1;
     } else {
-        display_index = current_index + 1;  // Convert 0-based to 1-based display
+        display_index = current_index + 1;
     }
     
     snprintf(index_count_text, sizeof(index_count_text), "%d/%d", 
@@ -79,10 +97,9 @@ void popup_redraw(void) {
     XftDrawStringUtf8(xft_draw, &xft_color_count, small_font, index_x_position, index_y_position,
                       (FcChar8*)index_count_text, strlen(index_count_text));
      
-    // Handle multiline text by unescaping newlines
-    char *unescaped_text = malloc(strlen(popup_text) + 1);
+    char *unescaped_text = malloc(strlen(popup_text_buffer) + 1);
     if (unescaped_text) {
-        const char *source_pointer = popup_text;
+        const char *source_pointer = popup_text_buffer;
         char *destination_pointer = unescaped_text;
          
         while (*source_pointer) {
@@ -101,7 +118,6 @@ void popup_redraw(void) {
         }
         *destination_pointer = '\0';
          
-        // Draw each line separately
         char *line_start = unescaped_text;
         char *line_end;
          
@@ -113,7 +129,6 @@ void popup_redraw(void) {
             line_start = line_end + 1;
         }
          
-        // Draw the last line (or the only line if no newlines)
         if (*line_start) {
             XftDrawStringUtf8(xft_draw, &xft_color, xft_font, left_margin, current_y_position,
                               (FcChar8*)line_start, strlen(line_start));
@@ -123,25 +138,18 @@ void popup_redraw(void) {
         free(unescaped_text);
     }
      
-    
-    
     int statusbar_y = window_attributes.height - font_height - 2;
     int separator_y = statusbar_y - font_height / 2 + 5;
     left_margin = 5;
     
     XDrawLine(display, popup_window, popup_gc, left_margin, separator_y, 
               window_attributes.width - left_margin, separator_y);
-    
-    // XftDrawStringUtf8(xft_draw, &xft_color, xft_font, left_margin, statusbar_y + font_ascent,
-    //                   (FcChar8*)statusbar_text, strlen(statusbar_text));
 
     XftFont *statusbar_font = xft_font_small ? xft_font_small : xft_font;
     int statusbar_ascent = statusbar_font->ascent;
     
     XftDrawStringUtf8(xft_draw, &xft_color, statusbar_font, left_margin, statusbar_y + statusbar_ascent,
                       (FcChar8*)statusbar_text, strlen(statusbar_text));
-
-    
 
     XFlush(display);
 }
@@ -205,8 +213,6 @@ static void calculate_position_from_anchor(int reference_x, int reference_y, int
             break;
     }
     
-    // Only apply bounds checking for mouse and absolute positioning
-    // Screen positioning uses screen edges as reference points
     if (*final_x < config.margin_horizontal) *final_x = config.margin_horizontal;
     if (*final_y < config.margin_vertical) *final_y = config.margin_vertical;
     if (*final_x + window_width > screen_width - config.margin_horizontal) {
@@ -218,12 +224,12 @@ static void calculate_position_from_anchor(int reference_x, int reference_y, int
 }
 
 static void resize_window(void) {
-    if (!showing_popup || !popup_window || !xft_font) return;
+    if (!showing_popup || !popup_window || !xft_font || !popup_text_buffer) return;
     
     int calculated_width = 600;
     int calculated_height = 200;
     
-    calculate_text_dimensions(popup_text, &calculated_width, &calculated_height);
+    calculate_text_dimensions(popup_text_buffer, &calculated_width, &calculated_height);
     
     if (calculated_width < 400) calculated_width = 400;
     if (calculated_width > screen_width - (config.margin_horizontal * 2)) {
@@ -296,7 +302,6 @@ static void resize_window(void) {
         calculate_position_from_anchor(reference_x, reference_y, calculated_width, calculated_height, 
                                      &window_x_coordinate, &window_y_coordinate);
 
-        // Store anchor point based on which corner/edge should remain fixed
         switch (config.anchor) {
             case ANCHOR_TOP_LEFT:
                 anchor_x = window_x_coordinate;
@@ -337,7 +342,6 @@ static void resize_window(void) {
         }
         initial_resize_done = 1;
     } else {
-        // Calculate new position keeping anchor point fixed
         switch (config.anchor) {
             case ANCHOR_TOP_LEFT:
                 window_x_coordinate = anchor_x;
@@ -397,7 +401,7 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
     if (!xft_font || !text) return 0;
     
     int max_width = 0;
-    int total_height = font_height + 20; // Header + padding
+    int total_height = font_height + 20;
     
     char *unescaped_text = malloc(strlen(text) + 1);
     if (!unescaped_text) return 0;
@@ -442,9 +446,9 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
     
     free(unescaped_text);
     
-    total_height += font_height + 30; // Footer + padding
+    total_height += font_height + 30;
     
-    *width = max_width + 40; // Left/right margins
+    *width = max_width + 40;
     *height = total_height;
     
     return 1;
@@ -543,12 +547,14 @@ int popup_show(const char *text) {
     
     if (!display || !root_window) return 0;
     
-    strncpy(popup_text, text, sizeof(popup_text) - 1);
-    popup_text[sizeof(popup_text) - 1] = '\0';
+    if (!ensure_popup_text_capacity()) {
+        return 0;
+    }
+    
+    strncpy(popup_text_buffer, text, popup_text_capacity - 1);
+    popup_text_buffer[popup_text_capacity - 1] = '\0';
     
     XSetWindowAttributes window_attributes;
-    // window_attributes.background_pixel = WhitePixel(display, DefaultScreen(display));
-    // window_attributes.border_pixel = BlackPixel(display, DefaultScreen(display));
     window_attributes.background_pixel = config.background;
     window_attributes.border_pixel = config.foreground;
     window_attributes.override_redirect = True;
@@ -576,8 +582,6 @@ int popup_show(const char *text) {
     }
     
     popup_gc = XCreateGC(display, popup_window, 0, NULL);
-    // XSetForeground(display, popup_gc, BlackPixel(display, DefaultScreen(display)));
-    // XSetForeground(display, popup_gc, config.foreground);
     
     XSelectInput(display, popup_window, ExposureMask);
     XMapWindow(display, popup_window);
@@ -651,6 +655,12 @@ void popup_cleanup(void) {
     XftColorFree(display, DefaultVisual(display, DefaultScreen(display)),
                  DefaultColormap(display, DefaultScreen(display)), &xft_color_count);
     
+    if (popup_text_buffer) {
+        free(popup_text_buffer);
+        popup_text_buffer = NULL;
+        popup_text_capacity = 0;
+    }
+    
     FcFini();
 }
 
@@ -668,8 +678,12 @@ void popup_handle_expose(XExposeEvent *expose_event) {
 void popup_update_text(const char *new_text) {
     if (!new_text) return;
     
-    strncpy(popup_text, new_text, sizeof(popup_text) - 1);
-    popup_text[sizeof(popup_text) - 1] = '\0';
+    if (!ensure_popup_text_capacity()) {
+        return;
+    }
+    
+    strncpy(popup_text_buffer, new_text, popup_text_capacity - 1);
+    popup_text_buffer[popup_text_capacity - 1] = '\0';
     
     if (showing_popup) {
         popup_redraw();

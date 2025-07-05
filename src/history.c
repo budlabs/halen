@@ -16,11 +16,12 @@
 
 #define METADATA_PREFIX "# HALEN_METADATA: "
 #define MAX_CLIPBOARD_ENTRIES 50
-#define MAX_CLIPBOARD_SIZE (10 * 1024 * 1024)
+
 
 static history_entry_t *entries = NULL;
 static int history_count = 0;
 static int current_index = -1;
+static size_t max_clipboard_memory_size = 0;
 
 static int process_history_file_lines(int (*line_handler)(const char* line, int index, void* context), void* context);
 static int find_overflow_hash_handler(const char* line, int current_index, void* context);
@@ -84,9 +85,9 @@ static char* load_overflow_content_by_hash(const char* overflow_hash) {
     FILE *overflow_file = fopen(overflow_file_path, "r");
     if (!overflow_file) return NULL;
     
-    char *full_content = malloc(MAX_CLIPBOARD_SIZE);
+    char *full_content = malloc(MAX_OVERFLOW_FILE_SIZE);
     if (full_content) {
-        size_t content_size = fread(full_content, 1, MAX_CLIPBOARD_SIZE - 1, overflow_file);
+        size_t content_size = fread(full_content, 1, MAX_OVERFLOW_FILE_SIZE - 1, overflow_file);
         full_content[content_size] = '\0';
     }
     fclose(overflow_file);
@@ -547,25 +548,50 @@ static char* transform_content_escaping(const char* content, int should_escape) 
     if (!content) return NULL;
     
     size_t content_length = strlen(content);
-    char *result = malloc(content_length * 2 + 1);
+    size_t max_result_size = should_escape ? (content_length * 2 + 1) : (content_length + 1);
+    
+    if (max_result_size > max_clipboard_memory_size) {
+        max_result_size = max_clipboard_memory_size;
+        msg(LOG_WARNING, "Content too large for escaping, truncating");
+    }
+    
+    char *result = malloc(max_result_size);
     if (!result) return NULL;
     
     const char *source = content;
     char *destination = result;
+    char *result_end = result + max_result_size - 1;
     
     if (should_escape) {
-        while (*source) {
+        while (*source && destination < result_end - 1) {
             switch (*source) {
-                case '\n': *destination++ = '\\'; *destination++ = 'n'; break;
-                case '\r': *destination++ = '\\'; *destination++ = 'r'; break;
-                case '\t': *destination++ = '\\'; *destination++ = 't'; break;
-                default: *destination++ = *source; break;
+                case '\n': 
+                    if (destination < result_end - 2) {
+                        *destination++ = '\\'; 
+                        *destination++ = 'n'; 
+                    }
+                    break;
+                case '\r': 
+                    if (destination < result_end - 2) {
+                        *destination++ = '\\'; 
+                        *destination++ = 'r'; 
+                    }
+                    break;
+                case '\t': 
+                    if (destination < result_end - 2) {
+                        *destination++ = '\\'; 
+                        *destination++ = 't'; 
+                    }
+                    break;
+                default: 
+                    *destination++ = *source; 
+                    break;
             }
             source++;
         }
     } else {
-        while (*source) {
-            if (*source == '\\' && *(source + 1)) {
+        while (*source && destination < result_end) {
+            if (*source == '\\' && *(source + 1) && destination < result_end - 1) {
                 switch (*(source + 1)) {
                     case 'n': *destination++ = '\n'; source += 2; break;
                     case 'r': *destination++ = '\r'; source += 2; break;
@@ -578,7 +604,9 @@ static char* transform_content_escaping(const char* content, int should_escape) 
         }
     }
     *destination = '\0';
-    return result;
+    
+    char *trimmed_result = realloc(result, strlen(result) + 1);
+    return trimmed_result ? trimmed_result : result;
 }
 
 static char* extract_display_content(const char *raw_content) {
@@ -944,6 +972,9 @@ int history_initialize(void) {
     entries = NULL;
     history_count = 0;
     current_index = -1;
+    
+    max_clipboard_memory_size = (config.max_lines * config.max_line_length * 2) + 1024;
+    
     return 1;
 }
 

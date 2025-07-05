@@ -5,6 +5,8 @@
 #include <sys/syslog.h>
 #include <X11/Xlib.h>
 
+#define MAX_OVERFLOW_FILE_SIZE (50 * 1024 * 1024)
+
 typedef enum {
     POPUP_ACTION_NONE = 0,
     POPUP_ACTION_NEXT,

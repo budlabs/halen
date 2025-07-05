@@ -10,6 +10,7 @@ typedef struct {
     char *content;
     char *timestamp;
     char *source;
+    char *hash;
 } history_entry_t;
 
 typedef struct {

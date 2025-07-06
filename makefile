@@ -1,4 +1,4 @@
-.PHONY: all clean run run-log
+.PHONY: all clean run run-log debug profile
 
 .ONESHELL:
 
@@ -11,6 +11,15 @@ CFLAGS += -Wall -Wextra -std=gnu99 -O0 -I$(BUILD_DIR) -I$(SRC_DIR) $(shell pkg-c
 LIBS = $(shell pkg-config --libs x11 xtst xext xfixes fontconfig xft) -lpthread
 SRC_DIR = src
 
+ifdef DEBUG
+CFLAGS += -fsanitize=address -fno-omit-frame-pointer -g
+LDFLAGS += -fsanitize=address
+endif
+
+ifdef PROFILE
+CFLAGS += -g -O1
+endif
+
 SRC = $(wildcard $(SRC_DIR)/*.c)
 OBJ = $(SRC:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 EXEC = $(BUILD_DIR)/$(NAME)
@@ -20,7 +29,7 @@ LOG = .gcc
 all: $(EXEC) 
 
 $(EXEC): $(OBJ)
-	$(CC) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 $(BUILD_DIR)/%.o: src/%.c $(BUILD_DIR)/config.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -48,3 +57,13 @@ $(BUILD_DIR)/config.h: makefile | $(BUILD_DIR)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)	
+
+debug:
+	$(MAKE) clean
+	$(MAKE) DEBUG=1 $(EXEC)
+	./$(EXEC) -c .config -V
+
+profile:
+	$(MAKE) clean
+	$(MAKE) PROFILE=1 $(EXEC)
+	heaptrack ./$(EXEC) -c .config -V

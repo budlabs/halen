@@ -33,20 +33,66 @@ static int anchor_y = -1;
 static int initial_resize_done = 0;
 
 static int ensure_popup_text_capacity(void) {
-    size_t required_capacity = (config.max_lines * (config.max_line_length + 1)) + 256;
+    size_t required_capacity = (config.max_lines * config.max_line_length) + 1024;
     
-    if (popup_text_capacity < required_capacity) {
-        char *new_buffer = realloc(popup_text_buffer, required_capacity);
-        if (!new_buffer) {
+    if (popup_text_buffer && popup_text_capacity >= required_capacity) {
+        return 1;
+    }
+    
+    if (!popup_text_buffer) {
+        popup_text_buffer = malloc(required_capacity);
+        if (!popup_text_buffer) {
             msg(LOG_ERR, "Failed to allocate popup text buffer");
             return 0;
         }
-        popup_text_buffer = new_buffer;
         popup_text_capacity = required_capacity;
-        msg(LOG_DEBUG, "Resized popup text buffer to %zu bytes", required_capacity);
+        return 1;
     }
     
+    char *new_buffer = realloc(popup_text_buffer, required_capacity);
+    if (!new_buffer) {
+        msg(LOG_ERR, "Failed to reallocate popup text buffer");
+        return 0;
+    }
+    
+    popup_text_buffer = new_buffer;
+    popup_text_capacity = required_capacity;
     return 1;
+}
+
+static char *cached_unescaped_text = NULL;
+static size_t cached_unescaped_capacity = 0;
+
+static char* get_unescaped_text_cached(const char *escaped_text) {
+    size_t required_length = strlen(escaped_text) + 1;
+    
+    if (!cached_unescaped_text || cached_unescaped_capacity < required_length) {
+        char *new_buffer = realloc(cached_unescaped_text, required_length);
+        if (!new_buffer) {
+            return text_unescape_content(escaped_text);
+        }
+        cached_unescaped_text = new_buffer;
+        cached_unescaped_capacity = required_length;
+    }
+    
+    const char *source = escaped_text;
+    char *destination = cached_unescaped_text;
+    
+    while (*source) {
+        if (*source == '\\' && *(source + 1)) {
+            switch (*(source + 1)) {
+                case 'n': *destination++ = '\n'; source += 2; break;
+                case 'r': *destination++ = '\r'; source += 2; break;
+                case 't': *destination++ = '\t'; source += 2; break;
+                default: *destination++ = *source++; break;
+            }
+        } else {
+            *destination++ = *source++;
+        }
+    }
+    *destination = '\0';
+    
+    return cached_unescaped_text;
 }
 
 void popup_redraw(void);
@@ -75,12 +121,7 @@ void popup_redraw(void) {
     int history_count = history_get_count();
     int current_index = history_get_current_index();
     
-    int display_index;
-    if (current_index == -1) {
-        display_index = 1;
-    } else {
-        display_index = current_index + 1;
-    }
+    int display_index = (current_index == -1) ? 1 : current_index + 1;
     
     snprintf(index_count_text, sizeof(index_count_text), "%d/%d", 
               display_index, history_count);
@@ -96,7 +137,7 @@ void popup_redraw(void) {
     XftDrawStringUtf8(xft_draw, &config.count_color, small_font, index_x_position, index_y_position,
                       (FcChar8*)index_count_text, strlen(index_count_text));
      
-    char *unescaped_text = text_unescape_content(popup_text_buffer);
+    char *unescaped_text = get_unescaped_text_cached(popup_text_buffer);
     if (unescaped_text) {
         char *line_start = unescaped_text;
         char *line_end;
@@ -112,10 +153,7 @@ void popup_redraw(void) {
         if (*line_start) {
             XftDrawStringUtf8(xft_draw, &config.foreground, xft_font, left_margin, current_y_position,
                               (FcChar8*)line_start, strlen(line_start));
-            current_y_position += line_spacing;
         }
-         
-        free(unescaped_text);
     }
      
     int statusbar_y = window_attributes.height - font_height - 2;
@@ -383,7 +421,7 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
     int max_width = 0;
     int total_height = font_height + 20;
     
-    char *unescaped_text = text_unescape_content(text);
+    char *unescaped_text = get_unescaped_text_cached(text);
     if (!unescaped_text) return 0;
     
     char *line_start = unescaped_text;
@@ -405,8 +443,6 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
         total_height += font_height + 2;
     }
     
-    free(unescaped_text);
-    
     total_height += font_height + 30;
     
     *width = max_width + 40;
@@ -415,17 +451,20 @@ static int calculate_text_dimensions(const char *text, int *width, int *height) 
     return 1;
 }
 
-int popup_init(Display *dpy, Window root, int width, int height) {
-    display = dpy;
-    root_window = root;
-
-    screen_width = width;
-    screen_height = height;
+int popup_init(Display *display_connection, Window root_window_param, int screen_width_pixels, int screen_height_pixels) {
+    display = display_connection;
+    root_window = root_window_param;
+    screen_width = screen_width_pixels;
+    screen_height = screen_height_pixels;
+    
+    popup_text_buffer = NULL;
+    popup_text_capacity = 0;
     
     if (!FcInit()) {
         msg(LOG_ERR, "Failed to initialize fontconfig");
         return 0;
     }
+    
     FcResult font_result;
 
     FcPattern *small_font_pattern = FcNameParse((FcChar8*)config.font);
@@ -465,7 +504,8 @@ int popup_init(Display *dpy, Window root, int width, int height) {
     font_height = xft_font->height;
     font_ascent = xft_font->ascent;
     
-    msg(LOG_NOTICE, "Popup system initialized with Xlib: %dx%d", width, height);
+    msg(LOG_NOTICE, "Popup system initialized: %dx%d", 
+        screen_width_pixels, screen_height_pixels);
     return 1;
 }
 
@@ -580,6 +620,12 @@ void popup_cleanup(void) {
         free(popup_text_buffer);
         popup_text_buffer = NULL;
         popup_text_capacity = 0;
+    }
+    
+    if (cached_unescaped_text) {
+        free(cached_unescaped_text);
+        cached_unescaped_text = NULL;
+        cached_unescaped_capacity = 0;
     }
     
     FcFini();

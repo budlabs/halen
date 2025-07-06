@@ -4,3 +4,4 @@ build/
 .gcc
 .config
 .tmp
+*.zst

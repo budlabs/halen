@@ -22,29 +22,6 @@
 #include "hotkey.h"
 #include "popup.h"
 
-// Hotkey system should behave like:
-// When Ctrl+V is pressed: we set a counter to 1, and block normal Ctrl+V behavior.
-// When Ctrl is released: if the counter is 1, we send a fake Ctrl+V event to replay the paste. 
-// and set the counter to 0.
-// when we "replay" the paste, we make sure not to process our own fake events.
-// If V is pressed while Ctrl is held down, if the counter is 1, show a popup with clipboard history. 
-// increment the counter.
-// If v is pressed when counter is 2 or more, (the popup is visible and ctrl is held down), we update
-// the text in the popup with the next clipboard entry. And set action to POPUP_ACTION_NEXT.
-// If c is pressed when counter is 2 or more, we update the text in the popup with the previous 
-// clipboard entry. And set action to POPUP_ACTION_PREV.
-// If x is pressed when counter is 2 or more, we close the popup and reset the counter. 
-// And set Action to POPUP_ACTION_CUT.
-// If z is pressed when counter is 2 or more, 
-// we close the popup and reset the counter. And set 
-// Action to POPUP_ACTION_CANCEL.
-// If d is pressed when counter is 2 or more, delete the selected entry from the clipboard history.
-//  and show the next entry in the current navigation direction.
-// When ctrl is released, if the counter is 2 or more, destroy the popup and reset the counter.
-// When the popup is destroyed, if the action is POPUP_ACTION_NEXT or POPUP_ACTION_PREV, we set
-// the clipboard to the selected entry and send a fake Ctrl+V event to paste it.
-// If action is POPUP_ACTION_CUT, we set the clipboard to the selected entry. (but don't paste it).
-
 static Display *record_display = NULL;
 static hotkey_callback_t main_callback = NULL;
 static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;

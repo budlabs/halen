@@ -1,0 +1,10 @@
+font = monospace
+font_size = 16
+background = #FCFFDF
+foreground = #000000
+count_color = #3322DD
+anchor = 5
+position = mouse
+margin = 30 10
+max_line_length = 80
+max_lines = 10

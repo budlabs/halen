@@ -29,16 +29,16 @@ EXEC = $(BUILD_DIR)/$(NAME)
 
 LOG = .gcc
 
-DATA_DIR := $(PREFIX)/share/$(NAME)
+DATA_DIR := $(DESTDIR)$(PREFIX)/share/$(NAME)
 
 all: $(EXEC)
 
 install: $(EXEC)
 	install -Dm644 ./data/config $(DATA_DIR)/config
-	install -Dm755 $(EXEC) $(PREFIX)/bin/$(NAME)
+	install -Dm755 $(EXEC) $(DESTDIR)$(PREFIX)/bin/$(NAME)
 
 uninstall:
-	rm -f $(PREFIX)/bin/$(NAME) $(DATA_DIR)/config
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(NAME) $(DATA_DIR)/config
 
 $(EXEC): $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
